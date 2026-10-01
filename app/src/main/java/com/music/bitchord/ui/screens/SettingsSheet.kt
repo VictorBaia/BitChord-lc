@@ -126,6 +126,7 @@ import coil3.compose.AsyncImage
 import com.music.bitchord.ui.components.isGlassSupported
 import com.music.bitchord.ui.components.languageDisplayNameRes
 import com.music.bitchord.ui.components.MessageState
+import com.music.bitchord.ui.components.ProfilePhotoCropDialog
 import com.music.bitchord.ui.components.SearchField
 import com.music.bitchord.ui.components.thumbnailBorder
 import com.music.bitchord.ui.icons.BitChordIcons
@@ -136,13 +137,17 @@ import com.music.bitchord.data.LocalMediaRepository
 import com.music.bitchord.data.NerdStats
 import com.music.bitchord.data.scrobbling.LastFM
 import com.music.bitchord.data.listentogether.ListenTogether
+import com.music.bitchord.data.navidrome.NavidromeStreamQuality
+import com.music.bitchord.data.navidrome.NavidromeStore
+import com.music.bitchord.data.navidrome.NavidromeLyricsMode
+import com.music.bitchord.data.navidrome.NavidromeRepository
 import com.music.bitchord.data.settings.AppSettings
+import com.music.bitchord.data.settings.AudioQuality
 import com.music.bitchord.data.settings.OutputPcmMode
 import com.music.bitchord.playback.AudioOutputStatus
 import com.music.bitchord.data.settings.AutomixPerformanceMode
 import com.music.bitchord.R
 import com.music.bitchord.data.sources.DeviceCodecs
-import com.music.bitchord.data.settings.AudioQuality
 import com.music.bitchord.data.settings.DownloadQuality
 import com.music.bitchord.data.settings.ThemeMode
 import com.music.bitchord.data.stats.Backup
@@ -174,6 +179,7 @@ fun SettingsScreen(
     onLyricsSources: () -> Unit,
     onTranslationLanguage: () -> Unit,
     onSources: () -> Unit,
+    onNavidromeSettings: () -> Unit,
     onListenTogether: () -> Unit,
     onSpotifyCanvasAuth: () -> Unit,
     onAppLanguage: () -> Unit,
@@ -266,7 +272,7 @@ fun SettingsScreen(
     // Filters the rows below — see [SettingsSearch]. Blank shows everything,
     // exactly as if the field weren't there.
     var searchQuery by remember { mutableStateOf("") }
-    var picking by remember { mutableStateOf<QualityTarget?>(null) }
+    var pickingAppQuality by remember { mutableStateOf<AppQualityTarget?>(null) }
     var pickingDownloadQuality by remember { mutableStateOf(false) }
     var pickingAutomixPerformance by remember { mutableStateOf(false) }
     // What the last export or import did, shown on the row that did it rather
@@ -416,6 +422,17 @@ fun SettingsScreen(
             }
         }
 
+        SearchableSettingsGroup(search) {
+            val navidromeSettingsTitle = stringResource(R.string.navidrome_settings)
+            row(navidromeSettingsTitle, "Navidrome", "server library", "subsonic", "open subsonic") {
+                SettingsRow(
+                    icon = Icons.Rounded.Dns,
+                    title = navidromeSettingsTitle,
+                    onClick = onNavidromeSettings,
+                )
+            }
+        }
+
         // The row that used to sit at the top of this group was called
         // "Lossless / HQ Audio" and toggled `SourceRegistry.setModuleEnabled` —
         // it switched the *module source* on and off, not lossless. Sources
@@ -435,23 +452,15 @@ fun SettingsScreen(
             }
             val onWifiTitle = stringResource(R.string.on_wifi)
             row(onWifiTitle, "wi-fi", "streaming quality") {
-                SettingsRow(
-                    icon = Icons.Rounded.Wifi,
-                    title = onWifiTitle,
+                SettingsRow(Icons.Rounded.Wifi, onWifiTitle,
                     badge = stringResource(R.string.in_use).takeIf { metered == false },
-                    value = wifiQuality.localizedLabel(),
-                    onClick = { picking = QualityTarget.WIFI },
-                )
+                    value = wifiQuality.appLocalizedLabel(), onClick = { pickingAppQuality = AppQualityTarget.WIFI })
             }
             val onMobileDataTitle = stringResource(R.string.on_mobile_data)
             row(onMobileDataTitle, "cellular", "streaming quality") {
-                SettingsRow(
-                    icon = Icons.Rounded.SignalCellularAlt,
-                    title = onMobileDataTitle,
+                SettingsRow(Icons.Rounded.SignalCellularAlt, onMobileDataTitle,
                     badge = stringResource(R.string.in_use).takeIf { metered == true },
-                    value = cellularQuality.localizedLabel(),
-                    onClick = { picking = QualityTarget.CELLULAR },
-                )
+                    value = cellularQuality.appLocalizedLabel(), onClick = { pickingAppQuality = AppQualityTarget.CELLULAR })
             }
             // Sits with the quality ceilings rather than with Playback: it
             // decides which version of a track gets fetched, the same question
@@ -500,13 +509,9 @@ fun SettingsScreen(
         SearchableSettingsGroup(search, header = stringResource(R.string.downloads)) {
             val downloadQualityTitle = stringResource(R.string.download_quality)
             row(downloadQualityTitle, "offline", "lossless") {
-                SettingsRow(
-                    icon = Icons.Rounded.Download,
-                    title = downloadQualityTitle,
+                SettingsRow(Icons.Rounded.Download, downloadQualityTitle,
                     subtitle = stringResource(R.string.download_quality_subtitle, downloadQuality.perTrack),
-                    value = downloadQuality.localizedLabel(),
-                    onClick = { pickingDownloadQuality = true },
-                )
+                    value = downloadQuality.localizedLabel(), onClick = { pickingDownloadQuality = true })
             }
             // Reads as part of Download quality above it, not as a setting
             // of its own — same treatment as Play animated cover over
@@ -1392,48 +1397,21 @@ fun SettingsScreen(
         }
     }
 
-    picking?.let { target ->
-        ModalBottomSheet(
-            onDismissRequest = { picking = null },
-            containerColor = MaterialTheme.colorScheme.background,
-        ) {
-            QualitySheet(
-                target = target,
-                selected = when (target) {
-                    QualityTarget.WIFI -> wifiQuality
-                    QualityTarget.CELLULAR -> cellularQuality
-                },
-                // Writes the one ceiling that was being edited and nothing
-                // else. There used to be a `SourceRegistry.applyQualityPreset`
-                // call here that flipped the module and JioSaavn switches to
-                // match — which meant budgeting *mobile data* switched those
-                // sources off while sitting on Wi-Fi, and coming back to Wi-Fi
-                // never switched them on again. Which sources a rung consults
-                // is now read per stream off the connection in force; see
-                // [AudioQuality.permits].
-                onSelect = { quality ->
-                    when (target) {
-                        QualityTarget.WIFI -> AppSettings.setAudioQualityWifi(quality)
-                        QualityTarget.CELLULAR -> AppSettings.setAudioQualityCellular(quality)
-                    }
-                    picking = null
-                },
-            )
+    pickingAppQuality?.let { target ->
+        ModalBottomSheet(onDismissRequest = { pickingAppQuality = null }, containerColor = MaterialTheme.colorScheme.background) {
+            AppAudioQualitySheet(target, if (target == AppQualityTarget.WIFI) wifiQuality else cellularQuality) { quality ->
+                if (target == AppQualityTarget.WIFI) AppSettings.setAudioQualityWifi(quality)
+                else AppSettings.setAudioQualityCellular(quality)
+                pickingAppQuality = null
+            }
         }
     }
-
     if (pickingDownloadQuality) {
-        ModalBottomSheet(
-            onDismissRequest = { pickingDownloadQuality = false },
-            containerColor = MaterialTheme.colorScheme.background,
-        ) {
-            DownloadQualitySheet(
-                selected = downloadQuality,
-                onSelect = { quality ->
-                    AppSettings.setDownloadQuality(quality)
-                    pickingDownloadQuality = false
-                },
-            )
+        ModalBottomSheet(onDismissRequest = { pickingDownloadQuality = false }, containerColor = MaterialTheme.colorScheme.background) {
+            DownloadQualitySheet(downloadQuality) { quality ->
+                AppSettings.setDownloadQuality(quality)
+                pickingDownloadQuality = false
+            }
         }
     }
 
@@ -1639,6 +1617,208 @@ fun SettingsScreen(
 
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun NavidromeSettingsScreen(
+    contentPadding: PaddingValues,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val metered by AppSettings.meteredConnection.collectAsStateWithLifecycle()
+    val config by NavidromeStore.config.collectAsStateWithLifecycle()
+    var picking by remember { mutableStateOf<QualityTarget?>(null) }
+    var pickingLyricsMode by remember { mutableStateOf(false) }
+    var showSetup by rememberSaveable { mutableStateOf(!config.isConfigured) }
+    var showDisplayName by rememberSaveable { mutableStateOf(false) }
+    var url by rememberSaveable(config.serverUrl) { mutableStateOf(config.serverUrl) }
+    var user by rememberSaveable(config.username) { mutableStateOf(config.username) }
+    var password by rememberSaveable(config.password) { mutableStateOf(config.password) }
+    var displayName by rememberSaveable(config.displayName) { mutableStateOf(config.displayName) }
+    var status by remember { mutableStateOf<String?>(null) }
+    var testing by remember { mutableStateOf(false) }
+    var photoToCrop by remember { mutableStateOf<Uri?>(null) }
+    var lyricsExtensionVersion by remember(config.serverUrl, config.username) { mutableStateOf<Int?>(null) }
+    var lyricsCapabilityChecked by remember(config.serverUrl, config.username) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) photoToCrop = uri
+    }
+    LaunchedEffect(config.serverUrl, config.username, config.password) {
+        lyricsCapabilityChecked = false
+        lyricsExtensionVersion = NavidromeRepository.songLyricsVersion().getOrNull()
+        lyricsCapabilityChecked = true
+        if ((lyricsExtensionVersion ?: 0) < 2 && config.lyricsMode == NavidromeLyricsMode.NAVIDROME) {
+            NavidromeStore.update(config.copy(lyricsMode = NavidromeLyricsMode.APP_DEFAULT))
+        }
+    }
+
+    Column(
+        modifier = modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(contentPadding),
+    ) {
+        Text(
+            text = stringResource(R.string.navidrome_settings),
+            style = MaterialTheme.typography.displayLarge,
+            color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 14.dp),
+        )
+        SettingsGroup(header = stringResource(R.string.navidrome)) {
+            SettingsRow(
+                icon = Icons.Rounded.Dns,
+                title = stringResource(R.string.navidrome_server),
+                onClick = { url = config.serverUrl; user = config.username; password = config.password; status = null; showSetup = true },
+            )
+            RowDivider()
+            SettingsRow(
+                icon = Icons.Rounded.Person,
+                title = stringResource(R.string.navidrome_display_name),
+                subtitle = config.effectiveDisplayName,
+                onClick = { displayName = config.displayName; showDisplayName = true },
+            )
+            RowDivider()
+            SettingsRow(
+                icon = Icons.Rounded.Person,
+                title = stringResource(R.string.navidrome_profile_photo),
+                subtitle = stringResource(if (config.profileImageUri.isBlank()) R.string.navidrome_profile_photo_unset else R.string.navidrome_profile_photo_set),
+                onClick = { photoPicker.launch(arrayOf("image/*")) },
+            )
+        }
+        SettingsGroup(header = stringResource(R.string.audio_quality)) {
+            SettingsRow(Icons.Rounded.Wifi, stringResource(R.string.on_wifi),
+                value = config.wifiStreamQuality.localizedLabel(), badge = stringResource(R.string.in_use).takeIf { metered == false },
+                compactValue = true, onClick = { picking = QualityTarget.WIFI })
+            RowDivider()
+            SettingsRow(Icons.Rounded.SignalCellularAlt, stringResource(R.string.on_mobile_data),
+                value = config.cellularStreamQuality.localizedLabel(), badge = stringResource(R.string.in_use).takeIf { metered == true },
+                compactValue = true, onClick = { picking = QualityTarget.CELLULAR })
+            RowDivider()
+            SettingsRow(Icons.Rounded.Download, stringResource(R.string.download_quality),
+                value = config.downloadStreamQuality.localizedLabel(), compactValue = true, onClick = { picking = QualityTarget.DOWNLOAD })
+        }
+        SettingsGroup(header = stringResource(R.string.synced_lyrics)) {
+            SettingsRow(
+                icon = Icons.Rounded.LibraryMusic,
+                title = stringResource(R.string.navidrome_lyrics_source),
+                value = stringResource(
+                    if (lyricsCapabilityChecked && (lyricsExtensionVersion ?: 0) < 2) {
+                        R.string.navidrome_lyrics_unavailable
+                    } else if (config.lyricsMode == NavidromeLyricsMode.NAVIDROME) {
+                        R.string.navidrome
+                    } else {
+                        R.string.navidrome_lyrics_app_default
+                    },
+                ),
+                onClick = if (lyricsCapabilityChecked && (lyricsExtensionVersion ?: 0) >= 2) {
+                    { pickingLyricsMode = true }
+                } else null,
+            )
+            RowDivider()
+            SettingsRow(
+                icon = Icons.Rounded.Person,
+                title = stringResource(R.string.navidrome_enrich_artists),
+                trailing = {
+                    Switch(
+                        checked = config.enrichArtists,
+                        onCheckedChange = { NavidromeStore.update(config.copy(enrichArtists = it)) },
+                    )
+                },
+                onClick = { NavidromeStore.update(config.copy(enrichArtists = !config.enrichArtists)) },
+            )
+        }
+    }
+
+    picking?.let { target ->
+        ModalBottomSheet(onDismissRequest = { picking = null }, containerColor = MaterialTheme.colorScheme.background) {
+            QualitySheet(target, when (target) {
+                QualityTarget.WIFI -> config.wifiStreamQuality
+                QualityTarget.CELLULAR -> config.cellularStreamQuality
+                QualityTarget.DOWNLOAD -> config.downloadStreamQuality
+            }) { quality ->
+                NavidromeStore.update(when (target) {
+                    QualityTarget.WIFI -> config.copy(wifiStreamQuality = quality)
+                    QualityTarget.CELLULAR -> config.copy(cellularStreamQuality = quality)
+                    QualityTarget.DOWNLOAD -> config.copy(downloadStreamQuality = quality)
+                })
+                picking = null
+            }
+        }
+    }
+    if (pickingLyricsMode) {
+        ModalBottomSheet(
+            onDismissRequest = { pickingLyricsMode = false },
+            containerColor = MaterialTheme.colorScheme.background,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+                Text(
+                    stringResource(R.string.navidrome_lyrics_source),
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.padding(horizontal = 22.dp, vertical = 14.dp),
+                )
+                NavidromeLyricsMode.entries.forEach { mode ->
+                    SettingsRow(
+                        icon = Icons.Rounded.LibraryMusic,
+                        title = stringResource(
+                            if (mode == NavidromeLyricsMode.NAVIDROME) {
+                                R.string.navidrome
+                            } else {
+                                R.string.navidrome_lyrics_app_default
+                            },
+                        ),
+                        trailing = if (mode == config.lyricsMode) {
+                            { Icon(Icons.Rounded.Check, contentDescription = null) }
+                        } else null,
+                        onClick = {
+                            NavidromeStore.update(config.copy(lyricsMode = mode))
+                            pickingLyricsMode = false
+                        },
+                    )
+                }
+            }
+        }
+    }
+    if (showDisplayName) AlertDialog(
+        onDismissRequest = { showDisplayName = false },
+        title = { Text(stringResource(R.string.navidrome_display_name)) },
+        text = { OutlinedTextField(displayName, { displayName = it }, label = { Text(stringResource(R.string.navidrome_display_name)) }, singleLine = true) },
+        confirmButton = { TextButton(onClick = { NavidromeStore.update(config.copy(displayName = displayName.trim())); showDisplayName = false }) { Text(stringResource(R.string.save)) } },
+        dismissButton = { TextButton(onClick = { showDisplayName = false }) { Text(stringResource(R.string.cancel)) } },
+    )
+    photoToCrop?.let { source ->
+        ProfilePhotoCropDialog(
+            source = source,
+            onDismiss = { photoToCrop = null },
+            onSaved = { saved ->
+                NavidromeStore.update(config.copy(profileImageUri = saved))
+                photoToCrop = null
+            },
+        )
+    }
+    if (showSetup) AlertDialog(
+        onDismissRequest = { if (config.isConfigured) showSetup = false },
+        title = { Text(stringResource(R.string.navidrome_setup_title)) },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(stringResource(R.string.navidrome_setup_description))
+            OutlinedTextField(url, { url = it }, label = { Text(stringResource(R.string.navidrome_server)) }, singleLine = true)
+            OutlinedTextField(user, { user = it }, label = { Text(stringResource(R.string.navidrome_username)) }, singleLine = true)
+            OutlinedTextField(password, { password = it }, label = { Text(stringResource(R.string.navidrome_password)) }, singleLine = true)
+            status?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        } },
+        confirmButton = { TextButton(enabled = !testing, onClick = {
+            val candidate = config.copy(serverUrl = url, username = user, password = password)
+            scope.launch {
+                testing = true
+                val result = com.music.bitchord.data.navidrome.NavidromeClient(candidate).health()
+                testing = false
+                if (result.isOk) { NavidromeStore.update(candidate); showSetup = false }
+                else status = listOfNotNull(context.getString(R.string.navidrome_connection_failed), when (result) {
+                    is com.music.bitchord.data.sources.SourceHealth.Rejected -> result.reason
+                    is com.music.bitchord.data.sources.SourceHealth.Unreachable -> result.reason
+                    is com.music.bitchord.data.sources.SourceHealth.Ok -> null
+                }).joinToString(": ")
+            }
+        }) { Text(stringResource(R.string.navidrome_test_and_save)) } },
+    )
+}
+
 /** "3 months of listening" — the unit a backup is actually measured in. */
 private fun Context.countOfMonths(months: Int): String = if (months == 0) {
     getString(R.string.no_listening_history)
@@ -1650,20 +1830,43 @@ private fun Context.countOfMonths(months: Int): String = if (months == 0) {
 private enum class QualityTarget(val icon: ImageVector) {
     WIFI(Icons.Rounded.Wifi),
     CELLULAR(Icons.Rounded.SignalCellularAlt),
+    DOWNLOAD(Icons.Rounded.Download),
+}
+
+private enum class AppQualityTarget(val icon: ImageVector) {
+    WIFI(Icons.Rounded.Wifi), CELLULAR(Icons.Rounded.SignalCellularAlt),
 }
 
 @Composable
+private fun AudioQuality.appLocalizedLabel(): String = stringResource(when (this) {
+    AudioQuality.LOW -> R.string.low
+    AudioQuality.MEDIUM -> R.string.medium
+    AudioQuality.HIGH -> R.string.high
+    AudioQuality.LOSSLESS -> R.string.lossless
+})
+
+@Composable
 private fun QualityTarget.localizedTitle(): String = stringResource(
-    if (this == QualityTarget.WIFI) R.string.wifi else R.string.mobile_data,
+    when (this) {
+        QualityTarget.WIFI -> R.string.wifi
+        QualityTarget.CELLULAR -> R.string.mobile_data
+        QualityTarget.DOWNLOAD -> R.string.downloads
+    },
 )
 
 @Composable
-private fun AudioQuality.localizedLabel(): String = stringResource(
+private fun NavidromeStreamQuality.localizedLabel(): String = stringResource(
     when (this) {
-        AudioQuality.LOW -> R.string.low
-        AudioQuality.MEDIUM -> R.string.medium
-        AudioQuality.HIGH -> R.string.high
-        AudioQuality.LOSSLESS -> R.string.lossless
+        NavidromeStreamQuality.ORIGINAL -> R.string.navidrome_quality_original
+        NavidromeStreamQuality.AAC_320 -> R.string.navidrome_quality_aac_320
+        NavidromeStreamQuality.AAC_256 -> R.string.navidrome_quality_aac_256
+        NavidromeStreamQuality.AAC_192 -> R.string.navidrome_quality_aac_192
+        NavidromeStreamQuality.AAC_128 -> R.string.navidrome_quality_aac_128
+        NavidromeStreamQuality.MP3_320 -> R.string.navidrome_quality_mp3_320
+        NavidromeStreamQuality.MP3_256 -> R.string.navidrome_quality_mp3_256
+        NavidromeStreamQuality.MP3_192 -> R.string.navidrome_quality_mp3_192
+        NavidromeStreamQuality.MP3_128 -> R.string.navidrome_quality_mp3_128
+        NavidromeStreamQuality.MP3_64 -> R.string.navidrome_quality_mp3_64
     },
 )
 
@@ -1798,10 +2001,53 @@ internal fun AccountCard(
 
 /** The quality options for one connection, with what each costs in data. */
 @Composable
-private fun QualitySheet(
-    target: QualityTarget,
+private fun AppAudioQualitySheet(
+    target: AppQualityTarget,
     selected: AudioQuality,
     onSelect: (AudioQuality) -> Unit,
+) {
+    val haptics = LocalHapticFeedback.current
+    Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+        Row(Modifier.padding(start = 22.dp, end = 22.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(target.icon, contentDescription = null, tint = MaterialTheme.colorScheme.onBackground, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(14.dp))
+            Column {
+                Text(stringResource(R.string.audio_quality), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onBackground)
+                Text(
+                    stringResource(R.string.audio_quality_connection,
+                        stringResource(if (target == AppQualityTarget.WIFI) R.string.wifi else R.string.mobile_data).lowercase(Locale.getDefault())),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outline)
+        AudioQuality.entries.reversed().forEach { quality ->
+            Row(
+                Modifier.fillMaxWidth().clickable {
+                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onSelect(quality)
+                }.padding(horizontal = 22.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(quality.appLocalizedLabel(), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onBackground)
+                    Text(stringResource(R.string.quality_hourly, quality.detail, quality.hourly), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (quality == selected) {
+                    Spacer(Modifier.width(12.dp))
+                    Icon(Icons.Rounded.Check, contentDescription = stringResource(R.string.selected), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QualitySheet(
+    target: QualityTarget,
+    selected: NavidromeStreamQuality,
+    onSelect: (NavidromeStreamQuality) -> Unit,
 ) {
     val haptics = LocalHapticFeedback.current
     Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
@@ -1818,15 +2064,12 @@ private fun QualitySheet(
             Spacer(Modifier.width(14.dp))
             Column {
                 Text(
-                    text = stringResource(R.string.audio_quality),
+                    text = stringResource(R.string.navidrome_stream_quality),
                     style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.onBackground,
                 )
                 Text(
-                    text = stringResource(
-                        R.string.audio_quality_connection,
-                        target.localizedTitle().lowercase(Locale.getDefault()),
-                    ),
+                    text = target.localizedTitle(),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1835,7 +2078,7 @@ private fun QualitySheet(
         HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outline)
 
         // Best first — the option most people want shouldn't be last.
-        AudioQuality.entries.reversed().forEach { quality ->
+        NavidromeStreamQuality.entries.forEach { quality ->
             val chosen = quality == selected
             Row(
                 modifier = Modifier
@@ -1854,7 +2097,13 @@ private fun QualitySheet(
                         color = MaterialTheme.colorScheme.onBackground,
                     )
                     Text(
-                        text = stringResource(R.string.quality_hourly, quality.detail, quality.hourly),
+                        text = stringResource(
+                            if (quality == NavidromeStreamQuality.ORIGINAL) {
+                                R.string.navidrome_quality_original_subtitle
+                            } else {
+                                R.string.navidrome_quality_transcoded_subtitle
+                            },
+                        ),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -2211,6 +2460,7 @@ internal fun SettingsRow(
     iconPainter: Painter? = null,
     onClick: (() -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
+    compactValue: Boolean = false,
 ) {
     Row(
         modifier = Modifier
@@ -2269,7 +2519,7 @@ internal fun SettingsRow(
             if (value != null) {
                 Text(
                     text = value,
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = if (compactValue) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )

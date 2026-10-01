@@ -47,7 +47,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -155,7 +154,6 @@ fun PlaylistPickerSheet(
         Spacer(Modifier.height(24.dp))
     }
 }
-
 @Composable
 private fun PlaylistRow(playlist: UserPlaylist, onClick: () -> Unit) {
     Row(
@@ -207,7 +205,6 @@ private fun NewPlaylistForm(
     modifier: Modifier = Modifier,
 ) {
     var name by remember { mutableStateOf("") }
-    var privacy by remember { mutableStateOf(PlaylistPrivacy.PRIVATE) }
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
 
@@ -218,7 +215,7 @@ private fun NewPlaylistForm(
     val submit: () -> Unit = {
         if (name.isNotBlank()) {
             focusManager.clearFocus()
-            onCreate(name, privacy)
+            onCreate(name, PlaylistPrivacy.PRIVATE)
         }
     }
 
@@ -308,23 +305,6 @@ private fun NewPlaylistForm(
             }
         }
 
-        SheetHeading(stringResource(R.string.who_can_see_it).uppercase(Locale.getDefault()))
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 22.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            PlaylistPrivacy.entries.forEach { option ->
-                PrivacyPill(
-                    icon = option.icon,
-                    label = option.label,
-                    selected = option == privacy,
-                    onClick = { privacy = option },
-                )
-            }
-        }
-
         Spacer(Modifier.height(20.dp))
         Button(
             onClick = submit,
@@ -338,7 +318,6 @@ private fun NewPlaylistForm(
         Spacer(Modifier.height(28.dp))
     }
 }
-
 /**
  * The rename panel of [BrowseActionsSheet], which swaps itself out for this
  * rather than opening a dialog over itself — same reason the create form lives
@@ -426,59 +405,5 @@ internal fun RenamePlaylistForm(
             Text(stringResource(R.string.save_name))
         }
         Spacer(Modifier.height(28.dp))
-    }
-}
-
-/**
- * The glyph that says what a visibility actually means — a padlock, a shared
- * link, a globe. Three words that all sound like degrees of the same thing
- * read much faster as three different shapes.
- */
-private val PlaylistPrivacy.icon: ImageVector
-    get() = when (this) {
-        PlaylistPrivacy.PRIVATE -> Icons.Rounded.Lock
-        PlaylistPrivacy.UNLISTED -> Icons.Rounded.Link
-        PlaylistPrivacy.PUBLIC -> Icons.Rounded.Public
-    }
-
-/** The search filters' pill, carrying an icon ahead of its label. */
-@Composable
-private fun PrivacyPill(
-    icon: ImageVector,
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    val content = if (selected) {
-        MaterialTheme.colorScheme.onPrimary
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(percent = 50))
-            .background(
-                if (selected) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.surfaceVariant
-                },
-            )
-            .clickable(onClick = onClick)
-            .padding(start = 11.dp, end = 14.dp, top = 7.dp, bottom = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = content,
-            modifier = Modifier.size(16.dp),
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.titleMedium,
-            color = content,
-        )
     }
 }

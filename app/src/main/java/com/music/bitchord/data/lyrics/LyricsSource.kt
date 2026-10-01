@@ -15,6 +15,11 @@ enum class LyricsSource(
     /** Whether it can return per-word timings, or only whole lines. */
     val wordSynced: Boolean,
 ) {
+    NAVIDROME(
+        label = "Navidrome",
+        detail = "Navidrome",
+        wordSynced = true,
+    ),
     // Declaration order is the default priority — [AppSettings.lyricsSourceOrder]
     // and [AppSettings.lyricsSources] both fall back to [LyricsSource.entries]
     // verbatim, so this list *is* the out-of-the-box experience. Stored by

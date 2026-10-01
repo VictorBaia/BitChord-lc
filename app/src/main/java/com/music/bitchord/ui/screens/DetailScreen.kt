@@ -225,6 +225,8 @@ fun DetailScreen(
      * Null on the pages with no list to act on.
      */
     onMore: ((List<Song>) -> Unit)? = null,
+    /** Downloads every track exposed by a Navidrome artist page. */
+    onDownloadArtist: ((List<Song>) -> Unit)? = null,
     /**
      * Saves this release to the account's library, or takes it out —
      * [DetailPage.library] says which way round. Null hides the control
@@ -440,6 +442,7 @@ fun DetailScreen(
                         onShuffle = { onShuffle(songs) },
                         subscription = page.subscription?.takeIf { onToggleSubscription != null },
                         onToggleSubscription = onToggleSubscription,
+                        onDownload = onDownloadArtist?.let { download -> { download(songs) } },
                         // Halved when an About section follows directly — see
                         // [AboutSection]'s own top inset, which makes up the
                         // rest of that shorter gap.
@@ -473,7 +476,13 @@ fun DetailScreen(
                     // it pages sideways four at a time and stops at twenty.
                     item {
                         val top = state.data.take(MAX_ARTIST_SONGS)
-                        SectionHeading(stringResource(R.string.top_songs), palette)
+                        SectionHeading(
+                            stringResource(
+                                if (page.browseId.startsWith("nd:artist:")) R.string.navidrome_recently_added
+                                else R.string.top_songs,
+                            ),
+                            palette,
+                        )
                         BoxWithConstraints {
                             val columnWidth = trackColumnWidth(maxWidth)
                             LazyRow(
@@ -1143,10 +1152,13 @@ private fun ActionRow(
     palette: ArtworkPalette,
     onPlay: () -> Unit,
     onShuffle: () -> Unit,
+    searching: Boolean = false,
+    onSearch: (() -> Unit)? = null,
     bottomSpace: Dp = 22.dp,
     /** The artist header's subscribe state, or null where it isn't offered. */
     subscription: SubscriptionState? = null,
     onToggleSubscription: (() -> Unit)? = null,
+    onDownload: (() -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
@@ -1168,6 +1180,14 @@ private fun ActionRow(
                 haptic = if (subscription.subscribed) Haptic.ToggleOff else Haptic.ToggleOn,
             )
         }
+        if (onDownload != null) {
+            CircleIconButton(
+                icon = BitChordIcons.Download,
+                contentDescription = stringResource(R.string.download_all),
+                palette = palette,
+                onClick = onDownload,
+            )
+        }
 
         PlayPill(
             onClick = onPlay,
@@ -1181,6 +1201,15 @@ private fun ActionRow(
             onClick = onShuffle,
             haptic = Haptic.Resume,
         )
+
+        onSearch?.let {
+            CircleIconButton(
+                icon = if (searching) Icons.Rounded.Close else BitChordIcons.Search,
+                contentDescription = stringResource(if (searching) R.string.close_search else R.string.search_this_list),
+                palette = palette,
+                onClick = it,
+            )
+        }
     }
     Spacer(Modifier.height(bottomSpace))
 }

@@ -41,7 +41,11 @@ target_include_directories(bitchord_analysis PRIVATE
 target_compile_options(bitchord_analysis PRIVATE -O3 -fvisibility=hidden)
 
 find_library(log-lib log)
-target_link_libraries(bitchord_analysis ${log-lib})
+# The analyzer uses the C++ standard library (std::vector, std::complex,
+# etc.). The NDK does not add its runtime merely because C++17 is enabled;
+# without this explicit link the object files compile but the final shared
+# library fails on symbols such as operator new(unsigned long).
+target_link_libraries(bitchord_analysis ${log-lib} c++_shared)
 
 # 16KB page-size support (Android 15+ 16KB kernels, Play requirement): align
 # LOAD segments to 16KB. A superset of 4KB alignment, so 4KB devices are

@@ -1,6 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">BitChord</string>
+    <string name="app_name">MyBichord</string>
+    <string name="hello_user">Olá, %1$s!</string>
     <string name="playback_channel_name">Tocando agora</string>
     <string name="download_channel_name">Downloads</string>
     <string name="download_channel_description">Músicas sendo salvas na sua pasta de Música</string>
@@ -35,7 +36,7 @@
     <string name="on_device">No dispositivo</string>
     <string name="playlists">Playlists</string>
     <string name="new_playlist">Nova playlist</string>
-    <string name="saved_to_youtube_music">Salva no YouTube Music</string>
+    <string name="saved_to_youtube_music">Salvo na sua biblioteca</string>
     <string name="sign_in">Entrar</string>
     <string name="sign_out">Sair</string>
     <string name="signed_in">Conectado</string>
@@ -48,6 +49,7 @@
     <string name="remove_from_library">Remover da biblioteca</string>
     <string name="download_all">Baixar tudo</string>
     <string name="top_songs">Músicas mais tocadas</string>
+    <string name="fans_also_like">Fãs também gostam</string>
     <string name="suggested">Sugestões</string>
     <string name="song_count">%1$d música</string>
     <plurals name="song_count_plural">
@@ -66,7 +68,7 @@
     <string name="artists">Artistas</string>
     <string name="albums">Álbuns</string>
     <string name="no_album_metadata">Nenhuma dessas faixas indica a qual álbum pertence.</string>
-    <string name="search_empty">Pesquise milhões de músicas no YouTube Music.</string>
+    <string name="search_empty">Pesquise em sua biblioteca.</string>
     <string name="recent_searches">Pesquisas recentes</string>
     <string name="clear">Limpar</string>
     <string name="search_hint">Artistas, músicas, letras e mais</string>
@@ -81,6 +83,20 @@
         <item quantity="other">Baixando %1$d músicas</item>
     </plurals>
     <string name="source">Fontes</string>
+    <string name="navidrome">Navidrome</string>
+    <string name="navidrome_not_configured">Não configurado</string>
+    <string name="navidrome_setup_title">Configurar Navidrome</string>
+    <string name="navidrome_setup_description">Conecte o BitChord à sua biblioteca Navidrome. HTTPS é obrigatório.</string>
+    <string name="navidrome_server">URL do servidor</string>
+    <string name="navidrome_username">Usuário</string>
+    <string name="navidrome_password">Senha</string>
+    <string name="navidrome_test_and_save">Testar e salvar</string>
+    <string name="navidrome_connection_ok">Conexão bem-sucedida</string>
+    <string name="navidrome_connection_failed">Não foi possível conectar ou as credenciais foram rejeitadas</string>
+    <string name="navidrome_recently_added">Adicionados recentemente</string>
+    <string name="navidrome_recently_played">Tocados recentemente</string>
+    <string name="navidrome_most_played">Mais tocadas</string>
+    <string name="navidrome_random">Álbuns aleatórios</string>
     <string name="lossless_audio">Áudio sem perdas</string>
     <string name="prefer_lossless">Preferir sem perdas</string>
     <string name="lossless_source_subtitle">FLAC e ALAC direto da fonte</string>
@@ -434,7 +450,15 @@
     <string name="rich_presence_footer">Mostre o que você está jogando em seu perfil do Discord.</string>
     <string name="save_name">Salvar nome</string>
     <string name="saved_to_downloads">Salvo em Downloads</string>
-    <string name="saved_to_youtube_music_account">Salvo na sua conta do YouTube Music</string>
+    <string name="saved_to_youtube_music_account">Salvo na sua biblioteca</string>
+    <string name="adjust_profile_photo">Ajustar foto do usuário</string>
+    <string name="profile_photo_crop_hint">Arraste para posicionar e use dois dedos para ampliar</string>
+    <string name="navidrome_lyrics_source">Fornecedor de letras</string>
+    <string name="navidrome_lyrics_app_default">Padrão do aplicativo</string>
+    <string name="navidrome_lyrics_unavailable">Indisponível neste servidor</string>
+    <string name="navidrome_enrich_artists">Enriquecer artistas com dados externos</string>
+    <string name="navidrome_moods">Humores</string>
+    <string name="genres">Gêneros</string>
     <string name="scrobble_delay">Atraso do scrobble</string>
     <string name="scrobble_delay_subtitle">Até que ponto em uma música fazer scrobble</string>
     <string name="scrobble_timing">Tempo de scrobble</string>
@@ -1314,4 +1338,24 @@
 
 
 
+    <string name="liked_songs">Músicas curtidas</string>
+    <string name="navidrome_stream_quality">Qualidade de áudio do Navidrome</string>
+    <string name="navidrome_stream_quality_subtitle">Formato e bitrate solicitados ao Navidrome</string>
+    <string name="navidrome_quality_original">Arquivo original</string>
+    <string name="navidrome_quality_original_subtitle">Sem transcodificação</string>
+    <string name="navidrome_quality_transcoded_subtitle">Transcodificado pelo Navidrome</string>
+    <string name="navidrome_quality_aac_320">AAC · 320 kbps</string>
+    <string name="navidrome_quality_aac_256">AAC · 256 kbps</string>
+    <string name="navidrome_quality_aac_192">AAC · 192 kbps</string>
+    <string name="navidrome_quality_aac_128">AAC · 128 kbps</string>
+    <string name="navidrome_quality_mp3_320">MP3 · 320 kbps</string>
+    <string name="navidrome_quality_mp3_256">MP3 · 256 kbps</string>
+    <string name="navidrome_quality_mp3_192">MP3 · 192 kbps</string>
+    <string name="navidrome_quality_mp3_128">MP3 · 128 kbps</string>
+    <string name="navidrome_quality_mp3_64">MP3 · 64 kbps</string>
+    <string name="navidrome_settings">Configurações do Navidrome</string>
+    <string name="navidrome_display_name">Nome de exibição</string>
+    <string name="navidrome_profile_photo">Foto do usuário</string>
+    <string name="navidrome_profile_photo_set">Foto selecionada</string>
+    <string name="navidrome_profile_photo_unset">Escolher uma foto</string>
 </resources>

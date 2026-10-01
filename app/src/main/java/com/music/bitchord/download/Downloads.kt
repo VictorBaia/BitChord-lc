@@ -8,6 +8,9 @@ import android.net.Uri
 import com.music.bitchord.data.DebugLog as Log
 import androidx.core.content.ContextCompat
 import com.music.bitchord.data.innertube.StreamResolver
+import com.music.bitchord.data.navidrome.NavidromeIds
+import com.music.bitchord.data.navidrome.NavidromeRepository
+import com.music.bitchord.data.navidrome.NavidromeStore
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.data.settings.DownloadQuality
@@ -1090,6 +1093,23 @@ object Downloads {
      *   a mid-download refusal and has to ask for the same rung it started on.
      */
     private suspend fun routeFor(track: Song, quality: DownloadQuality): Route {
+        if (NavidromeIds.rawTrack(track.videoId) != null) {
+            val stream = NavidromeRepository.stream(
+                track.videoId,
+                NavidromeStore.config.value.downloadStreamQuality,
+            ).getOrThrow()
+            val storable = DownloadStore.storable(stream.format.codec)
+                ?: error("No downloadable audio format for this Navidrome track")
+            return Route(
+                extension = storable.extension,
+                mimeType = storable.mimeType,
+                describe = stream.format.summary,
+                downloadFormat = stream.format.downloadBadge(),
+                write = { sink, onProgress ->
+                    Downloader.fetchDirect(stream.url, stream.headers, sink, onProgress)
+                },
+            )
+        }
         fromSources(track, quality)?.let { (stream, storable) ->
             // A manifest is an index, not audio. Whichever kind it is, fetching
             // it as a file writes the index into something named `.flac` —

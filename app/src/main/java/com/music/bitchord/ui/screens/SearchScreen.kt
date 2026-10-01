@@ -218,7 +218,44 @@ fun SearchScreen(
                             else -> null
                         } }
                     val topResult = results.data.filterIsInstance<SearchResult.TopTrack>().firstOrNull()
-                    if (filter == SearchFilter.ALL && topResult != null) {
+                    val browseResults = results.data.filterIsInstance<SearchResult.Browse>()
+                    val exactArtist = browseResults.firstOrNull {
+                        it.item.type == BrowseType.ARTIST && it.item.title.equals(query.trim(), true)
+                    }
+                    val exactAlbum = browseResults.firstOrNull {
+                        it.item.type == BrowseType.ALBUM && it.item.title.equals(query.trim(), true)
+                    }
+                    val prefixArtist = browseResults.firstOrNull {
+                        it.item.type == BrowseType.ARTIST && it.item.title.startsWith(query.trim(), true)
+                    }
+                    val prefixAlbum = browseResults.firstOrNull {
+                        it.item.type == BrowseType.ALBUM && it.item.title.startsWith(query.trim(), true)
+                    }
+                    val topBrowse = exactArtist ?: exactAlbum ?: prefixArtist ?: prefixAlbum
+                    if (filter == SearchFilter.ALL && topBrowse != null) {
+                        item(key = "search:top-browse:${topBrowse.item.browseId}") {
+                            Column(
+                                Modifier.padding(
+                                    start = PAGE_GUTTER,
+                                    end = PAGE_GUTTER,
+                                    top = 18.dp,
+                                    bottom = 8.dp,
+                                ),
+                            ) {
+                                Text(
+                                    text = "Top result",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Spacer(Modifier.height(10.dp))
+                                BrowseRow(
+                                    item = topBrowse.item,
+                                    onClick = { onBrowseClick(topBrowse.item) },
+                                    onLongPress = onBrowseLongPress?.let { { it(topBrowse.item) } },
+                                )
+                            }
+                        }
+                    } else if (filter == SearchFilter.ALL && topResult != null) {
                         item(key = "search:top-result:${topResult.song.videoId}") {
                             TopResultCard(
                                 song = topResult.song,
@@ -228,7 +265,7 @@ fun SearchScreen(
                             )
                         }
                     }
-                    searchSections(results.data, filter).forEach { section ->
+                    searchSections(results.data.filterNot { it == topBrowse }, filter).forEach { section ->
                         section.title?.let { title ->
                             item(key = "search-section:$title") {
                                 Text(
@@ -737,7 +774,7 @@ private fun SearchFilterTabs(filter: SearchFilter, onFilterChange: (SearchFilter
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        SearchFilter.entries.forEach { entry ->
+        SearchFilter.entries.filterNot { it == SearchFilter.VIDEOS }.forEach { entry ->
             val selected = entry == filter
             Box(
                 modifier = Modifier

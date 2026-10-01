@@ -399,6 +399,11 @@ object AudioCache {
                     null
                 }
             }
+            ?: spec.uri.takeIf { it.authority == "navidrome" }?.getQueryParameter("id")?.let { id ->
+                "navidrome|$id|${com.music.bitchord.data.navidrome.NavidromeStore.config.value.streamQuality(
+                    metered = AppSettings.meteredConnection.value == true,
+                ).name}"
+            }
             ?: spec.key
             ?: spec.uri.toString()
     }
@@ -545,7 +550,9 @@ object AudioCache {
         // read-ahead for those is a separate job, and their servers are
         // typically a good deal closer than googlevideo anyway.
         //
-        val videoIds = mediaIds.filter { SourceRegistry.parseTrackKey(it) == null }
+        val videoIds = mediaIds.filter {
+            SourceRegistry.parseTrackKey(it) == null && !it.startsWith("nd:")
+        }
             // A track already on disk needs no reading ahead, and read-ahead
             // speaks only to googlevideo: warming one would spend mobile data
             // fetching a second copy of a file the listener deliberately saved,

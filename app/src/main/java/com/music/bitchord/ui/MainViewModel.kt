@@ -14,6 +14,10 @@ import com.music.bitchord.data.AppUpdateChecker
 import com.music.bitchord.data.LocalMediaRepository
 import com.music.bitchord.data.LikeState
 import com.music.bitchord.data.YtMusicRepository
+import com.music.bitchord.data.navidrome.NavidromeRepository
+import com.music.bitchord.data.navidrome.NavidromeIds
+import com.music.bitchord.data.navidrome.NavidromeStore
+import com.music.bitchord.data.navidrome.NavidromeLyricsMode
 import com.music.bitchord.data.lyrics.EmbeddedLyrics
 import com.music.bitchord.data.lyrics.LyricLine
 import com.music.bitchord.data.lyrics.LyricsRepository
@@ -90,9 +94,13 @@ enum class LyricsProviderState {
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val authStore = AuthStore(app)
+    private val navidromeActive: Boolean get() = NavidromeStore.config.value.isConfigured
 
     private val _signedIn = MutableStateFlow(authStore.isSignedIn)
     val signedIn: StateFlow<Boolean> = _signedIn.asStateFlow()
+    val libraryAuthenticated: StateFlow<Boolean> = combine(_signedIn, NavidromeStore.config) { google, navidrome ->
+        google || navidrome.isConfigured
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, _signedIn.value || navidromeActive)
 
     private val _home = MutableStateFlow<UiState<List<HomeShelf>>>(UiState.Loading)
     val home: StateFlow<UiState<List<HomeShelf>>> = _home.asStateFlow()
@@ -306,8 +314,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         album: String? = null,
         localUri: String? = null,
     ) {
+        val appSources = AppSettings.lyricsSources.value - LyricsSource.NAVIDROME
+        val preferNavidrome = videoId.startsWith("nd:") &&
+            NavidromeStore.config.value.lyricsMode == NavidromeLyricsMode.NAVIDROME
         val sources = if (AppSettings.syncedLyrics.value) {
-            AppSettings.lyricsSources.value
+            if (preferNavidrome) appSources + LyricsSource.NAVIDROME else appSources
         } else {
             emptySet()
         }
@@ -362,14 +373,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 lyricsFor = null
                 return@launch
             }
-            val found = LyricsRepository.lyrics(
-                videoId, title, artist, durationMs, album, sources,
-                AppSettings.lyricsSourceOrder.value, AppSettings.prioritizeSyllableSync.value,
-                onSourceStarted = { source -> providerStarted(generation, source) },
-                onSourceResult = { source, result ->
-                    providerFinished(generation, source, result)
-                },
-                onSourceCancelled = { source -> providerCancelled(generation, source) },
+            val sourceStarted: (LyricsSource) -> Unit = { source -> providerStarted(generation, source) }
+            val sourceFinished: (LyricsSource, LyricsRepository.Result?) -> Unit = { source, result ->
+                providerFinished(generation, source, result)
+            }
+            val sourceCancelled: (LyricsSource) -> Unit = { source -> providerCancelled(generation, source) }
+            val navidromeLyrics = if (preferNavidrome) {
+                LyricsRepository.lyrics(
+                    videoId, title, artist, durationMs, album,
+                    sources = setOf(LyricsSource.NAVIDROME),
+                    order = listOf(LyricsSource.NAVIDROME),
+                    prioritizeSyllableSync = false,
+                    onSourceStarted = sourceStarted,
+                    onSourceResult = sourceFinished,
+                    onSourceCancelled = sourceCancelled,
+                )
+            } else null
+            val found = navidromeLyrics ?: LyricsRepository.lyrics(
+                videoId, title, artist, durationMs, album,
+                sources = appSources,
+                order = AppSettings.lyricsSourceOrder.value.filterNot { it == LyricsSource.NAVIDROME },
+                prioritizeSyllableSync = AppSettings.prioritizeSyllableSync.value,
+                onSourceStarted = sourceStarted,
+                onSourceResult = sourceFinished,
+                onSourceCancelled = sourceCancelled,
             )
             val selected = selectedLyricsSource?.let(lyricsProviderResults::get) ?: found
             _lyrics.value = selected?.lines
@@ -569,7 +596,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (previous == status) return
         LikeState.set(videoId, status)
         viewModelScope.launch {
-            YtMusicRepository.rate(videoId, status).fold(
+            (if (navidromeActive) NavidromeRepository.rate(videoId, status) else YtMusicRepository.rate(videoId, status)).fold(
                 onSuccess = {
                     // Liked Music is now out of date either way.
                     libraryStale = true
@@ -788,11 +815,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Re-fetched rather than cached for the session: playlists are edited here. */
     fun loadPlaylists() {
-        if (!_signedIn.value || _playlistsLoading.value) return
+        if ((!_signedIn.value && !navidromeActive) || _playlistsLoading.value) return
         val identity = listenerKey()
         _playlistsLoading.value = true
         viewModelScope.launch {
-            YtMusicRepository.userPlaylists().onSuccess { if (identity == listenerKey()) _playlists.value = it }
+            (if (navidromeActive) NavidromeRepository.userPlaylists() else YtMusicRepository.userPlaylists())
+                .onSuccess { if (identity == listenerKey()) _playlists.value = it }
             if (identity == listenerKey()) _playlistsLoading.value = false
         }
     }
@@ -819,7 +847,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun editPlaylistShelf(edit: (List<ShelfItem>) -> List<ShelfItem>) {
         val page = (_library.value as? UiState.Success)?.data ?: return
-        val existing = page.shelves.firstOrNull { it.title == YtMusicRepository.PLAYLISTS_SHELF }
+        val existing = page.shelves.firstOrNull {
+            it.title == YtMusicRepository.PLAYLISTS_SHELF ||
+                it.items.any { item -> item.browseId?.startsWith("nd:playlist:") == true }
+        }
         val items = edit(existing?.items.orEmpty())
         if (items == existing?.items) return
         val shelves = when {
@@ -877,13 +908,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val openSongs = (_detailStack.value.firstOrNull { it.browseId == playlist.browseId }
                 ?.songs as? UiState.Success)?.data
-            val known = openSongs
-                ?: YtMusicRepository.allSongs(playlist.browseId).getOrNull()
+            val known = openSongs ?: if (navidromeActive) {
+                NavidromeRepository.playlist(playlist.browseId).getOrNull()?.songs.let { it as? UiState.Success }?.data
+            } else YtMusicRepository.allSongs(playlist.browseId).getOrNull()
             if (known?.any { it.videoId == song.videoId } == true) {
                 onResult(true)
                 return@launch
             }
-            YtMusicRepository.addToPlaylist(playlist.playlistId, listOf(song.videoId)).fold(
+            (if (navidromeActive) NavidromeRepository.addToPlaylist(playlist.playlistId, song.videoId).map { emptyMap() }
+            else YtMusicRepository.addToPlaylist(playlist.playlistId, listOf(song.videoId))).fold(
                 onSuccess = { added ->
                     libraryStale = true
                     // The playlist's page may be open behind the picker — it is
@@ -906,20 +939,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!requireSignIn()) return
         val name = title.trim().ifBlank { text(R.string.new_playlist) }
         viewModelScope.launch {
-            YtMusicRepository.createPlaylist(
+            (if (navidromeActive) NavidromeRepository.createPlaylist(name, song)
+            else YtMusicRepository.createPlaylist(
                 title = name,
                 privacy = privacy,
                 videoIds = listOfNotNull(song?.videoId),
-            ).fold(
+            )).fold(
                 onSuccess = { playlistId ->
                     // Nothing to look up for a playlist this account has just
                     // made: it is the owner by construction, so its card is
                     // editable the moment it appears rather than one request
                     // after someone holds it.
-                    setPlaylistOwned("VL$playlistId", true)
+                    setPlaylistOwned(if (navidromeActive) "nd:playlist:$playlistId" else "VL$playlistId", true)
                     libraryStale = true
                     val created = UserPlaylist(
-                        playlistId = playlistId,
+                        playlistId = if (navidromeActive) "nd:$playlistId" else playlistId,
                         title = name,
                         // Only what this request itself establishes. Both
                         // surfaces that draw it leave a blank one out, so an
@@ -957,6 +991,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * row out from under the reader rather than waiting for a re-fetch.
      */
     fun removeFromPlaylist(browseId: String, song: Song) {
+        if (browseId.startsWith("nd:playlist:")) {
+            if (!requireSignIn()) return
+            val index = ((_detailStack.value.firstOrNull { it.browseId == browseId }?.songs as? UiState.Success)?.data
+                ?.indexOfFirst { it.videoId == song.videoId } ?: -1)
+            if (index < 0) return
+            viewModelScope.launch {
+                NavidromeRepository.removeFromPlaylist("nd:${browseId.removePrefix("nd:playlist:")}", index).onSuccess {
+                    libraryStale = true
+                    _detailStack.value = _detailStack.value.map { page ->
+                        if (page.browseId == browseId) page.copy(songs = UiState.Success(
+                            (page.songs as? UiState.Success)?.data.orEmpty().filterIndexed { current, _ -> current != index },
+                        )) else page
+                    }
+                }
+            }
+            return
+        }
         val setVideoId = song.setVideoId ?: return
         if (!requireSignIn()) return
         val playlistId = browseId.removePrefix("VL")
@@ -1073,7 +1124,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val name = title.trim()
         if (name.isBlank() || name == playlist.title) return
         viewModelScope.launch {
-            YtMusicRepository.renamePlaylist(playlist.playlistId, name).fold(
+            (if (navidromeActive) NavidromeRepository.renamePlaylist(playlist.playlistId, name)
+            else YtMusicRepository.renamePlaylist(playlist.playlistId, name)).fold(
                 onSuccess = {
                     setPlaylistTitle(playlist, name)
                     libraryStale = true
@@ -1086,7 +1138,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun deletePlaylist(playlist: UserPlaylist) {
         if (!requireSignIn()) return
         viewModelScope.launch {
-            YtMusicRepository.deletePlaylist(playlist.playlistId).fold(
+            (if (navidromeActive) NavidromeRepository.deletePlaylist(playlist.playlistId)
+            else YtMusicRepository.deletePlaylist(playlist.playlistId)).fold(
                 onSuccess = {
                     _playlists.value = _playlists.value
                         .filterNot { it.playlistId == playlist.playlistId }
@@ -1158,7 +1211,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * would be a request spent to rule out what was never on offer.
      */
     fun resolvePlaylistOwnership(browseId: String?) {
-        if (!_signedIn.value || browseId == null) return
+        if (browseId == null) return
+        if (browseId.startsWith("nd:playlist:")) {
+            setPlaylistOwned(browseId, true)
+            return
+        }
+        if (!_signedIn.value) return
         if (browseId in _playlistOwned.value || browseId in ownershipInFlight) return
         if (_playlists.value.none { it.browseId == browseId }) return
         ownershipInFlight += browseId
@@ -1186,7 +1244,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * hides them for guests — this is the backstop for a session that expired
      * between the menu opening and the tap.
      */
-    private fun requireSignIn(): Boolean = _signedIn.value
+    private fun requireSignIn(): Boolean = navidromeActive || _signedIn.value
 
     /**
      * Whether the library needs re-fetching. Set by every write above and
@@ -1210,10 +1268,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         startTypeaheadMediaPipeline()
         loadHome()
         loadExplore()
-        if (_signedIn.value) {
+        if (_signedIn.value || navidromeActive) {
             loadLibrary()
-            loadAccount()
             loadPlaylists()
+            if (_signedIn.value) loadAccount()
+        }
+        viewModelScope.launch {
+            NavidromeStore.config.drop(1).collect { config ->
+                if (config.isConfigured) {
+                    loadHome()
+                    loadLibrary()
+                    loadExplore()
+                }
+            }
         }
         viewModelScope.launch {
             // drop(1): the current value is just the count so far, not a play.
@@ -1318,7 +1385,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun refresh(feed: Feed) {
         if (feed in _refreshing.value) return
-        if (feed == Feed.LIBRARY && !_signedIn.value) return
+        if (feed == Feed.LIBRARY && !libraryAuthenticated.value) return
         val identity = listenerKey()
         _refreshing.value = _refreshing.value + feed
         viewModelScope.launch {
@@ -1337,6 +1404,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun fetchExplore() {
+        if (navidromeActive) {
+            val state = NavidromeRepository.explore(
+                text(R.string.genres),
+                text(R.string.navidrome_moods),
+            ).fold(
+                onSuccess = { sections ->
+                    if (sections.isEmpty()) UiState.Error(text(R.string.nothing_to_explore))
+                    else UiState.Success(sections)
+                },
+                onFailure = { UiState.Error(it.friendly()) },
+            )
+            _explore.value = state
+            (state as? UiState.Success)?.data?.let(::loadMoodGenreArtwork)
+            return
+        }
         val state = YtMusicRepository.moodAndGenres().fold(
             onSuccess = { sections ->
                 if (sections.isEmpty()) {
@@ -1363,7 +1445,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 sections.flatMap(MoodGenreSection::items).forEach { item ->
                     launch {
                         val artwork = limiter.withPermit {
-                            YtMusicRepository.moodGenreArtwork(item.browseId, item.params).getOrNull()
+                            if (NavidromeIds.isNavidrome(item.browseId)) {
+                                NavidromeRepository.moodGenreArtwork(item).getOrNull()
+                            } else {
+                                YtMusicRepository.moodGenreArtwork(item.browseId, item.params).getOrNull()
+                            }
                         } ?: return@launch
                         val current = (_explore.value as? UiState.Success)?.data ?: return@launch
                         _explore.value = UiState.Success(current.map { section ->
@@ -1385,7 +1471,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _selectedMoodGenre.value = item
         _moodGenreShelves.value = UiState.Loading
         viewModelScope.launch {
-            _moodGenreShelves.value = YtMusicRepository.moodGenreShelves(item.browseId, item.params).fold(
+            val result = if (NavidromeIds.isNavidrome(item.browseId)) {
+                NavidromeRepository.moodGenreShelves(item)
+            } else {
+                YtMusicRepository.moodGenreShelves(item.browseId, item.params)
+            }
+            _moodGenreShelves.value = result.fold(
                 onSuccess = { shelves ->
                     if (shelves.isEmpty()) UiState.Error(text(R.string.nothing_to_explore))
                     else UiState.Success(shelves)
@@ -1407,6 +1498,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadHome() {
+        if (navidromeActive) {
+            _home.value = UiState.Loading
+            _homePendingShelves.value = 1
+            _homeLoadingMore.value = false
+            _homeRecentlyPlayedLoading.value = false
+            viewModelScope.launch {
+                _home.value = NavidromeRepository.home(
+                    text(R.string.navidrome_recently_added),
+                    text(R.string.navidrome_recently_played),
+                    text(R.string.navidrome_most_played),
+                    text(R.string.navidrome_random),
+                ).fold(
+                    onSuccess = { feed ->
+                        if (feed.shelves.isEmpty()) UiState.Error(text(R.string.library_empty))
+                        else UiState.Success(feed.shelves)
+                    },
+                    onFailure = { UiState.Error(it.friendly()) },
+                )
+                _homePendingShelves.value = 0
+            }
+            return
+        }
         val identity = listenerKey()
         val generation = homeLoadGeneration.incrementAndGet()
         _home.value = UiState.Loading
@@ -1494,6 +1607,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Refreshes the core feed without blanking the current Play page first. */
     private suspend fun refreshHome(identity: String?) = coroutineScope {
+        if (navidromeActive) {
+            NavidromeRepository.home(
+                text(R.string.navidrome_recently_added),
+                text(R.string.navidrome_recently_played),
+                text(R.string.navidrome_most_played),
+                text(R.string.navidrome_random),
+            ).onSuccess { feed ->
+                if (feed.shelves.isNotEmpty()) _home.value = UiState.Success(feed.shelves)
+            }
+            return@coroutineScope
+        }
         val recent = if (_signedIn.value) async { YtMusicRepository.homeRecentlyPlayed() } else null
         YtMusicRepository.home().onSuccess { feed ->
             if (identity != listenerKey()) return@onSuccess
@@ -1536,14 +1660,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadLibrary() {
-        if (!_signedIn.value) return
+        if (!navidromeActive && !_signedIn.value) return
         val identity = listenerKey()
         _library.value = UiState.Loading
         viewModelScope.launch { fetchLibrary(identity) }
     }
 
     private suspend fun fetchLibrary(identity: String?) {
-        val next = YtMusicRepository.library().fold(
+        val libraryResult = if (navidromeActive) NavidromeRepository.library(
+            text(R.string.liked_songs), text(R.string.playlists), text(R.string.albums), text(R.string.artists),
+        ) else YtMusicRepository.library()
+        val next = libraryResult.fold(
             onSuccess = { page ->
                 // Liked Music is published with just its first page on the tab;
                 // the rest of the collection is synced into LikeState here, in
@@ -1836,6 +1963,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // see [SourceResolver.substituteForYouTube] — which upgrades
                 // the ones it holds without any of them having to be a
                 // separate row to pick between.
+                if (navidromeActive) {
+                    val result = NavidromeRepository.search(request.query, request.filter)
+                    if (request.requestId != newestRequestId.get()) return@collectLatest
+                    _results.value = result.fold(
+                        onSuccess = { rows ->
+                            searchCache.put(key, SearchCacheEntry(rows, null))
+                            searchSession = SearchSession(key, request.requestId, request.filter, null)
+                            UiState.Success(rows)
+                        },
+                        onFailure = { failure -> UiState.Error(failure.friendly()) },
+                    )
+                    return@collectLatest
+                }
                 val result = YtMusicRepository.searchPage(request.query, request.filter)
                 // A search that has been superseded shouldn't land on screen,
                 // whether it succeeded or failed.
@@ -1903,8 +2043,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             .debounce(SUGGEST_DEBOUNCE_MS)
             .collectLatest { input ->
                 if (!stillWanted(input)) return@collectLatest
-                val fetched = YtMusicRepository.searchSuggestions(input).getOrNull()
-                    ?: return@collectLatest
+                val fetched = if (navidromeActive) {
+                    NavidromeRepository.search(input, SearchFilter.ALL).getOrNull()?.map { row -> when (row) {
+                        is SearchResult.TopTrack -> row.song.title
+                        is SearchResult.Track -> row.song.title
+                        is SearchResult.Browse -> row.item.title
+                    } } ?: return@collectLatest
+                } else YtMusicRepository.searchSuggestions(input).getOrNull() ?: return@collectLatest
                 // Asked again on the way back; the field is live throughout.
                 if (!stillWanted(input)) return@collectLatest
                 _suggestions.value = listOf(input) +
@@ -1932,6 +2077,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // _suggestions after submission, and we must not re-open the
                 // typeahead dropdown under an already-committed search.
                 if (searchSubmitted) {
+                    _typeaheadResults.value = emptyList()
+                    return@collectLatest
+                }
+                if (navidromeActive) {
                     _typeaheadResults.value = emptyList()
                     return@collectLatest
                 }
@@ -2128,6 +2277,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
          */
 
         fun browseTypeOf(browseId: String, fallback: BrowseType = BrowseType.OTHER): BrowseType = when {
+            browseId == NavidromeIds.LIKED -> BrowseType.PLAYLIST
+            browseId.startsWith("nd:album:") -> BrowseType.ALBUM
+            browseId.startsWith("nd:artist:") -> BrowseType.ARTIST
+            browseId.startsWith("nd:playlist:") -> BrowseType.PLAYLIST
             browseId.startsWith(Downloads.PLAYLIST_PREFIX) -> BrowseType.PLAYLIST
             browseId.startsWith("UC") -> BrowseType.ARTIST
             browseId.startsWith("MPREb") || browseId.startsWith("VLOLAK") || browseId.startsWith("OLAK") -> BrowseType.ALBUM
@@ -2251,6 +2404,46 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         if (songs.isEmpty()) UiState.Error(text(R.string.no_local_audio_found))
                         else UiState.Success(songs)
                     }
+                }
+                browseId == NavidromeIds.LIKED -> NavidromeRepository.likedSongs().fold(
+                    onSuccess = { songs ->
+                        artwork = songs.firstOrNull()?.thumbnailUrl
+                        UiState.Success(songs)
+                    },
+                    onFailure = { UiState.Error(it.friendly()) },
+                )
+                browseId.startsWith("nd:album:") -> {
+                    NavidromeRepository.album(browseId).fold(
+                        onSuccess = { page ->
+                            artwork = page.thumbnailUrl
+                            name = page.title
+                            credit = page.subtitle
+                            description = page.description
+                            page.songs
+                        },
+                        onFailure = { UiState.Error(it.friendly()) },
+                    )
+                }
+                browseId.startsWith("nd:artist:") -> {
+                    NavidromeRepository.artist(
+                        browseId,
+                        text(R.string.albums),
+                        text(R.string.fans_also_like),
+                    ).fold(
+                        onSuccess = { page ->
+                            sections = page.sections; artwork = page.thumbnailUrl; name = page.name
+                            description = page.description
+                            monthlyListenerCount = page.monthlyListenerCount
+                            UiState.Success(page.songs.withArtwork(thumbnailUrl ?: artwork))
+                        },
+                        onFailure = { UiState.Error(it.friendly()) },
+                    )
+                }
+                browseId.startsWith("nd:playlist:") -> {
+                    NavidromeRepository.playlist(browseId).fold(
+                        onSuccess = { page -> artwork = page.thumbnailUrl; name = page.title; page.songs },
+                        onFailure = { UiState.Error(it.friendly()) },
+                    )
                 }
                 resolved == BrowseType.ARTIST -> {
                     YtMusicRepository.artistPage(browseId).fold(
@@ -2507,6 +2700,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     LocalMediaRepository.getLocalMusic(context)
                         .ifEmpty { error(text(R.string.no_local_audio_found)) }
                 }
+                browseId.startsWith("nd:album:") -> NavidromeRepository.album(browseId)
+                    .map { (it.songs as? UiState.Success)?.data.orEmpty() }
+                browseId.startsWith("nd:playlist:") -> NavidromeRepository.playlist(browseId)
+                    .map { (it.songs as? UiState.Success)?.data.orEmpty() }
                 else -> YtMusicRepository.allSongs(browseId)
             }
             onResult(result.map { it.withArtwork(artworkFallback) })

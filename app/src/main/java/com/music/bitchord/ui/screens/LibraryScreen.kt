@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -30,6 +31,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -54,6 +58,7 @@ import com.music.bitchord.ui.components.LIBRARY_GRID_SPACING
 import com.music.bitchord.ui.components.MessageState
 import com.music.bitchord.ui.components.PAGE_GUTTER
 import com.music.bitchord.ui.components.PullToRefresh
+import com.music.bitchord.ui.components.SearchField
 import com.music.bitchord.ui.components.SHELF_CARD_WIDTH
 import com.music.bitchord.ui.components.libraryGrid
 import com.music.bitchord.ui.components.librarySkeleton
@@ -163,31 +168,6 @@ fun LibraryScreen(
                 }
             }
             item(key = "shelf:$onDevice") {
-                val webdavConfigured by AppSettings.webdavUrl.collectAsStateWithLifecycle()
-                val smbHost by AppSettings.smbHost.collectAsStateWithLifecycle()
-                val smbShare by AppSettings.smbShare.collectAsStateWithLifecycle()
-                // The remote libraries share one card shape; each entry is
-                // title, subtitle and the page it opens.
-                val remotes = listOf(
-                    Triple(
-                        stringResource(R.string.webdav),
-                        if (webdavConfigured.isBlank()) {
-                            stringResource(R.string.webdav_not_configured)
-                        } else {
-                            stringResource(R.string.webdav_subtitle)
-                        },
-                        com.music.bitchord.data.webdav.WebDavConfig.BROWSE_ID,
-                    ),
-                    Triple(
-                        stringResource(R.string.smb),
-                        if (smbHost.isBlank() || smbShare.isBlank()) {
-                            stringResource(R.string.smb_not_configured)
-                        } else {
-                            stringResource(R.string.smb_subtitle)
-                        },
-                        com.music.bitchord.data.smb.SmbConfig.BROWSE_ID,
-                    ),
-                )
                 val onDeviceShelf = HomeShelf(
                     title = onDevice,
                     items = listOf(
@@ -198,22 +178,7 @@ fun LibraryScreen(
                             videoId = null,
                             browseId = "local:downloads",
                         ),
-                        ShelfItem(
-                            title = stringResource(R.string.local_music),
-                            subtitle = stringResource(R.string.audio_files_on_device),
-                            thumbnailUrl = null,
-                            videoId = null,
-                            browseId = "local:all",
-                        ),
-                    ) + remotes.map { (title, subtitle, browseId) ->
-                        ShelfItem(
-                            title = title,
-                            subtitle = subtitle,
-                            thumbnailUrl = null,
-                            videoId = null,
-                            browseId = browseId,
-                        )
-                    } + downloadedPlaylists.map { playlist ->
+                    ) + downloadedPlaylists.map { playlist ->
                         ShelfItem(
                             title = playlist.title,
                             // The credit the playlist was downloaded with,
@@ -261,7 +226,7 @@ fun LibraryScreen(
                     // makes one — so the row is drawn either way, empty but
                     // for the tile that creates the first playlist.
                     val shelves = state.data.shelves
-                    if (shelves.none { it.title == PLAYLISTS }) {
+                    if (shelves.none { it.isPlaylistShelf() }) {
                         item(key = "shelf:$PLAYLISTS") {
                             val emptyPlaylists = HomeShelf(PLAYLISTS, emptyList())
                             PlaylistShelf(
@@ -275,7 +240,7 @@ fun LibraryScreen(
                     }
                     shelves.forEach { shelf ->
                         item(key = "shelf:${shelf.title}") {
-                            if (shelf.title == PLAYLISTS) {
+                            if (shelf.isPlaylistShelf()) {
                                 val pinnedFirst = shelf.pinnedFirst(pinnedPlaylists)
                                 PlaylistShelf(
                                     shelf = pinnedFirst,
@@ -300,6 +265,9 @@ fun LibraryScreen(
         }
     }
 }
+
+private fun HomeShelf.isPlaylistShelf(): Boolean =
+    title == PLAYLISTS || items.any { it.browseId?.startsWith("nd:playlist:") == true }
 
 /**
  * The way in to Replay, at the top of the page.
@@ -497,10 +465,15 @@ fun LibraryGridPage(
     // immediately rather than waiting for the row underneath to be revisited.
     val pinnedPlaylists by AppSettings.pinnedPlaylists.collectAsStateWithLifecycle()
     val librarySort by AppSettings.librarySort.collectAsStateWithLifecycle()
+    var query by rememberSaveable(shelf.title) { mutableStateOf("") }
     // Pinning wins over the default order, but an explicit sort is a stronger,
     // more deliberate signal than a pin and is left to reorder the whole grid,
     // pinned cards included.
     val sortedShelf = shelf.pinnedFirst(pinnedPlaylists).sortedForLibrary(librarySort)
+    val visibleItems = sortedShelf.items.filter {
+        query.isBlank() || it.title.contains(query.trim(), ignoreCase = true) ||
+            it.subtitle.contains(query.trim(), ignoreCase = true)
+    }
     BoxWithConstraints(modifier.fillMaxSize()) {
         val grid = libraryGrid(maxWidth - PAGE_GUTTER * 2)
         LazyVerticalGrid(
@@ -511,6 +484,15 @@ fun LibraryGridPage(
             verticalArrangement = Arrangement.spacedBy(20.dp),
             modifier = Modifier.padding(horizontal = PAGE_GUTTER),
         ) {
+            item(key = "search", span = { GridItemSpan(maxLineSpan) }) {
+                SearchField(
+                    query = query,
+                    onQueryChange = { query = it },
+                    onSubmit = {},
+                    placeholder = stringResource(R.string.search),
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+            }
             if (onNewPlaylist != null) {
                 item(key = "leading") {
                     NewShelfCard(
@@ -522,7 +504,7 @@ fun LibraryGridPage(
                     )
                 }
             }
-            items(sortedShelf.items, key = { it.browseId ?: it.title }) { item ->
+            items(visibleItems, key = { it.browseId ?: it.title }) { item ->
                 ShelfCard(
                     item = item,
                     onClick = { onItemClick(item) },

@@ -515,7 +515,9 @@ data class UserPlaylist(
     val subtitle: String,
     val thumbnailUrl: String?,
 ) {
-    val browseId: String get() = "VL$playlistId"
+    val browseId: String get() = if (playlistId.startsWith("nd:")) {
+        "nd:playlist:${playlistId.removePrefix("nd:")}"
+    } else "VL$playlistId"
 }
 
 /**

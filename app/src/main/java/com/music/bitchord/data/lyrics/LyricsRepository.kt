@@ -7,6 +7,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Collections
+import com.music.bitchord.data.navidrome.NavidromeRepository
 
 /**
  * Where the player gets its lyrics.
@@ -181,6 +182,7 @@ object LyricsRepository {
         hit: BiniLyrics.Hit?,
     ): List<LyricLine>? {
         val found = when (source) {
+            LyricsSource.NAVIDROME -> NavidromeRepository.lyrics(videoId).getOrNull()
             LyricsSource.BETTER_LYRICS -> BetterLyrics.lyrics(title, artist, durationMs, album)
             LyricsSource.BETTER_LYRICS_PORTATO -> BetterLyrics.portato(title, artist, durationMs, album)
             LyricsSource.LYRICS_PLUS -> LyricsPlus.lyrics(title, artist, durationMs, album, isrc)

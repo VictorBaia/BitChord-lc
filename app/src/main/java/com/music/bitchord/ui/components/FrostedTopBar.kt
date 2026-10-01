@@ -73,7 +73,6 @@ import androidx.compose.ui.unit.max
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
-import com.music.bitchord.BuildConfig
 import com.music.bitchord.R
 import com.music.bitchord.data.model.Account
 import com.music.bitchord.data.settings.AppSettings
@@ -162,6 +161,7 @@ fun FrostedTopBar(
     artworkPageChrome: Boolean = false,
     /** Source sampled by floating top-bar surfaces when liquid glass is off. */
     backButtonHazeState: HazeState? = null,
+    rootGreeting: String? = null,
     trailingTitle: String? = null,
     onBack: (() -> Unit)? = null,
     refreshing: Boolean = false,
@@ -303,6 +303,7 @@ fun FrostedTopBar(
             } else if (useFloatingChrome) {
                 FloatingAppMark(
                     hazeState = backButtonHazeState,
+                    greeting = rootGreeting,
                     modifier = Modifier
                         .align(Alignment.CenterStart)
                         .padding(start = PAGE_GUTTER),
@@ -320,15 +321,13 @@ fun FrostedTopBar(
                         colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onSurface),
                         modifier = Modifier.height(18.dp),
                     )
-                    // The dev flavor gets its own applicationId so it can sit
-                    // installed next to the prod build; this badge is the
-                    // in-app equivalent, so the two are never mixed up at a
-                    // glance once both are running.
-                    if (BuildConfig.FLAVOR == "dev") {
+                    rootGreeting?.let { greeting ->
                         Text(
-                            text = "Dev",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
+                            text = greeting,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(start = 6.dp),
                         )
                     }
@@ -365,6 +364,7 @@ fun FrostedTopBar(
 @Composable
 private fun FloatingAppMark(
     hazeState: HazeState?,
+    greeting: String?,
     modifier: Modifier = Modifier,
 ) {
     val reduceDynamicBlur by AppSettings.reduceDynamicBlur.collectAsStateWithLifecycle()
@@ -392,11 +392,13 @@ private fun FloatingAppMark(
                 modifier = Modifier.size(width = 24.dp, height = 16.dp),
             )
         }
-        if (BuildConfig.FLAVOR == "dev") {
+        greeting?.let {
             Text(
-                text = "Dev",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
+                text = it,
+                style = MaterialTheme.typography.titleMedium,
+                color = contentColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(start = 6.dp),
             )
         }

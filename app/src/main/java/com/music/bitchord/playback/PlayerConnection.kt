@@ -27,6 +27,7 @@ import com.music.bitchord.data.model.NOTIFICATION_ART_PX
 import com.music.bitchord.data.model.PlaybackSourceType
 import com.music.bitchord.data.model.QueueTier
 import com.music.bitchord.data.model.Song
+import com.music.bitchord.data.navidrome.NavidromeIds
 import com.music.bitchord.data.model.artworkAt
 import com.music.bitchord.data.sources.SourceRegistry
 import com.music.bitchord.data.sources.TrackMatcher
@@ -542,6 +543,7 @@ private fun Song.matchQuery(): String = buildString {
 
 fun Song.toMediaItem(): MediaItem {
     val sourceTrack = SourceRegistry.parseTrackKey(videoId)
+    val navidromeTrack = NavidromeIds.rawTrack(videoId)
     // A row from search or a playlist carries no file of its own, but the track
     // may still be on disk from a download — see [Downloads.saved].
     //
@@ -570,6 +572,7 @@ fun Song.toMediaItem(): MediaItem {
         ?: Downloads.verifiedSavedUri(videoId)
     val uriString = offlineUri ?: when {
         videoId.startsWith("content://") || videoId.startsWith("file://") -> videoId
+        navidromeTrack != null -> "bitchord://navidrome?id=${Uri.encode(navidromeTrack)}${matchQuery()}"
         // Title, artist and runtime ride along in the URI because they are what
         // a cross-source match is made on, and the resolver runs on ExoPlayer's
         // loader thread with nothing but a DataSpec in hand — see
@@ -734,12 +737,14 @@ const val DIRECT_YOUTUBE_PARAMETER = "direct_youtube"
  * source-backed track differently again, so filing lines under it would scatter
  * one song's story across several names.
  */
-fun mediaIdIn(uri: Uri): String? = if (uri.authority == "source") {
-    val configId = uri.getQueryParameter("s")
-    val trackId = uri.getQueryParameter("t")
-    if (configId != null && trackId != null) SourceRegistry.trackKey(configId, trackId) else null
-} else {
-    uri.getQueryParameter("v")
+fun mediaIdIn(uri: Uri): String? = when (uri.authority) {
+    "navidrome" -> uri.getQueryParameter("id")?.let(NavidromeIds::track)
+    "source" -> {
+        val configId = uri.getQueryParameter("s")
+        val trackId = uri.getQueryParameter("t")
+        if (configId != null && trackId != null) SourceRegistry.trackKey(configId, trackId) else null
+    }
+    else -> uri.getQueryParameter("v")
 }
 
 /**

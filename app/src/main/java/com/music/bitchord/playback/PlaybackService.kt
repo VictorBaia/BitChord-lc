@@ -52,6 +52,7 @@ import androidx.media3.exoplayer.upstream.BandwidthMeter
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
+import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.LibraryResult
@@ -81,6 +82,10 @@ import com.music.bitchord.R
 import com.music.bitchord.data.LocalMediaRepository
 import com.music.bitchord.data.innertube.InnertubeParser
 import com.music.bitchord.data.YtMusicRepository
+import com.music.bitchord.data.navidrome.NavidromeRepository
+import com.music.bitchord.data.navidrome.NavidromeIds
+import com.music.bitchord.data.navidrome.NavidromeBitmapLoader
+import com.music.bitchord.data.navidrome.NavidromeStore
 import com.music.bitchord.data.lyrics.EmbeddedLyrics
 import com.music.bitchord.data.lyrics.LyricLine
 import com.music.bitchord.data.lyrics.LyricsRepository
@@ -1211,6 +1216,37 @@ class PlaybackService : MediaLibraryService() {
             // usually *not* the one playing, which is exactly why the lines
             // have to say. See [TrackLog.about].
             val about = TrackLog.about(mediaIdIn(dataSpec.uri))
+            if (dataSpec.uri.authority == "navidrome") {
+                val id = dataSpec.uri.getQueryParameter("id")
+                    ?: throw java.io.IOException("Navidrome stream is missing its id")
+                val quality = NavidromeStore.config.value.streamQuality(metered = AppSettings.meteredConnection.value == true)
+                val mediaId = mediaIdIn(dataSpec.uri) ?: "nd:$id"
+                val timeOffsetSeconds = if (quality.maxKbps != null && dataSpec.position > 0) {
+                    (dataSpec.position * 8L / (quality.maxKbps * 1000L)).coerceAtLeast(0L)
+                } else {
+                    0L
+                }
+                val stream = runBlocking(about) {
+                    withTimeout(RESOLVE_TIMEOUT_MS) {
+                        NavidromeRepository.stream(mediaId, quality, timeOffsetSeconds).getOrThrow()
+                    }
+                }
+                NerdStats.onSourceStream(mediaId, stream.format, "Navidrome")
+                NerdStats.recordSource(mediaId, "Navidrome")
+                return@Resolver dataSpec.buildUpon()
+                    .setUri(Uri.parse(stream.url))
+                    .apply {
+                        // A transcoder cannot answer an HTTP byte range. Translate the
+                        // extractor's byte position to Subsonic's temporal offset and
+                        // make the new response begin at its own byte zero. CacheDataSource
+                        // still writes these bytes into the original absolute hole.
+                        if (timeOffsetSeconds > 0) {
+                            setPosition(0)
+                            setLength(C.LENGTH_UNSET.toLong())
+                        }
+                    }
+                    .build()
+            }
             // A source-backed track is resolved by whichever source can serve
             // it, which is not necessarily the one it was queued from — see
             // [SourceResolver.resolve]. Handled ahead of the YouTube path
@@ -1501,7 +1537,18 @@ class PlaybackService : MediaLibraryService() {
             DefaultDataSource.Factory(this, resolvingFactory),
         )
         AudioCache.setUpstream(defaultDataSourceFactory)
-        mediaSourceFactory = DefaultMediaSourceFactory(AudioCache.playbackFactory(defaultDataSourceFactory))
+        val extractorsFactory = DefaultExtractorsFactory()
+            // Navidrome's transcoded MP3/AAC response is progressive and may not
+            // expose an intrinsic seek table. Its bitrate is fixed by our request,
+            // so Media3 can safely publish an approximate seek map. "Always" is
+            // required because some servers omit Content-Length until their
+            // transcoding cache has finished producing the file.
+            .setConstantBitrateSeekingEnabled(true)
+            .setConstantBitrateSeekingAlwaysEnabled(true)
+        mediaSourceFactory = DefaultMediaSourceFactory(
+            AudioCache.playbackFactory(defaultDataSourceFactory),
+            extractorsFactory,
+        )
             .setLoadErrorHandlingPolicy(PermanentAwareLoadErrorPolicy())
 
         configuredFloatOutput = shouldEnableFloatOutput()
@@ -1603,6 +1650,7 @@ class PlaybackService : MediaLibraryService() {
             MediaLibraryCallback(),
         )
             .setId(SESSION_ID)
+            .setBitmapLoader(NavidromeBitmapLoader(this))
             .setSessionActivity(sessionActivity())
             .build()
         refreshCustomLayouts()
@@ -2484,7 +2532,11 @@ class PlaybackService : MediaLibraryService() {
         LikeState.set(videoId, target)
         refreshCustomLayouts()
         favoriteActionJob = scope.launch {
-            YtMusicRepository.rate(videoId, target)
+            (if (NavidromeIds.rawTrack(videoId) != null) {
+                NavidromeRepository.rate(videoId, target)
+            } else {
+                YtMusicRepository.rate(videoId, target)
+            })
                 .onFailure {
                     LikeState.set(videoId, previous)
                     refreshCustomLayouts()

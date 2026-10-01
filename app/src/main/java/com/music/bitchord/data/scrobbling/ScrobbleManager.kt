@@ -2,6 +2,8 @@ package com.music.bitchord.data.scrobbling
 
 import com.music.bitchord.data.DebugLog as Log
 import com.music.bitchord.data.model.Song
+import com.music.bitchord.data.navidrome.NavidromeIds
+import com.music.bitchord.data.navidrome.NavidromeRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -115,6 +117,10 @@ class ScrobbleManager(
     }
 
     private fun scrobbleSong(song: Song, durationSeconds: Int) {
+        if (NavidromeIds.rawTrack(song.videoId) != null) {
+            scope.launch { NavidromeRepository.scrobble(song.videoId, submission = true) }
+            return
+        }
         val scrobbleArtist = song.artist.forScrobble()
         scope.launch {
             LastFM
@@ -134,6 +140,10 @@ class ScrobbleManager(
     }
 
     private fun updateNowPlaying(song: Song) {
+        if (NavidromeIds.rawTrack(song.videoId) != null) {
+            scope.launch { NavidromeRepository.scrobble(song.videoId, submission = false) }
+            return
+        }
         val scrobbleArtist = song.artist.forScrobble()
         scope.launch {
             LastFM
