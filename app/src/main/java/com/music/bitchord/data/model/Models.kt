@@ -222,9 +222,39 @@ fun String?.durationMillis(): Long {
 }
 
 /** As [Song.artworkAt], for artwork that isn't a track's. */
-fun String?.artworkAt(px: Int): String? = this?.replace(SIZE_HINT, "w$px-h$px")
+fun String?.artworkAt(px: Int): String? {
+    val value = this ?: return null
+    // Navidrome artwork is represented in models by a content URI so Android
+    // media surfaces can read it. Coil needs a separate stable model because
+    // content URIs do not carry the requested image size and the provider
+    // cannot participate in Coil's disk cache. Keep the provider URI as the
+    // canonical model and derive a cacheable, sized model only for image UI.
+    val providerMatch = NAVIDROME_ARTWORK_URI.matchEntire(value)
+    val sizedMatch = NAVIDROME_SIZED_ARTWORK_URI.matchEntire(value)
+    val id = when {
+        providerMatch != null -> android.net.Uri.decode(providerMatch.groupValues[1])
+        sizedMatch != null -> android.net.Uri.decode(sizedMatch.groupValues[1])
+        else -> null
+    }
+    if (id != null) {
+        val bucket = when {
+            px <= ROW_ART_PX -> ROW_ART_PX
+            px <= CARD_ART_PX -> CARD_ART_PX
+            px <= HEADER_ART_PX -> HEADER_ART_PX
+            else -> PLAYER_ART_PX
+        }
+        return "bitchord://navidrome-cover/${android.net.Uri.encode(id)}?size=$bucket"
+    }
+    return value.replace(SIZE_HINT, "w$px-h$px")
+}
 
 private val SIZE_HINT = Regex("""w\d+-h\d+""")
+private val NAVIDROME_ARTWORK_URI = Regex(
+    """content://[^/]+\.navidrome-artwork/([^/?]+)""",
+)
+private val NAVIDROME_SIZED_ARTWORK_URI = Regex(
+    """bitchord://navidrome-cover/([^/?]+)(?:\?.*)?""",
+)
 
 /**
  * Artwork for a list row — 52dp at most, so about 140px on a 3x screen.
@@ -233,11 +263,11 @@ private val SIZE_HINT = Regex("""w\d+-h\d+""")
  */
 const val ROW_ART_PX = 160
 
-/** Artwork for a shelf card: 166dp wide, so a little under 450px at 3x. */
-const val CARD_ART_PX = 480
+/** Artwork for a large shelf/card surface, with extra sharpness on 2x2 grids. */
+const val CARD_ART_PX = 640
 
-/** Artwork for a page header, drawn near enough full width. */
-const val HEADER_ART_PX = 720
+/** Artwork for an album/artist header, matching the player's native-sized art. */
+const val HEADER_ART_PX = 1200
 
 /**
  * Artwork handed to the media session — the lock screen, the notification,

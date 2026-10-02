@@ -346,8 +346,8 @@ private fun GlassNowPlaying(
             )
             Spacer(Modifier.width(if (isInline) 8.dp else 10.dp))
             if (isInline) {
-                Text(
-                    text = song.title,
+                ExplicitSongTitle(
+                    song = song,
                     // The same size the expanded row sets it in. Collapsing the
                     // bar drops the artist line and the skip button, not the
                     // title's weight in the row — a title that shrank as well
@@ -360,11 +360,6 @@ private fun GlassNowPlaying(
                     // still clears the 32dp artwork beside it.
                     style = MaterialTheme.typography.titleMedium,
                     color = contentColor,
-                    // The inline row shares its width with the tab pill and the
-                    // Search circle, so most titles will not fit at this size.
-                    // Cut with an ellipsis rather than wrapped or scaled.
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
             } else {

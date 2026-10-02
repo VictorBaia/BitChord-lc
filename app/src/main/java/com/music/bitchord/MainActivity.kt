@@ -2878,6 +2878,7 @@ private fun BitChordApp(
                                 viewModel.loadPlaylists()
                                 playlistTarget = song
                             },
+                            onTopResultQueue = addToQueue,
                             onBrowseClick = { item ->
                                 viewModel.recordEntity(SearchHistoryEntity(
                                     id = item.browseId ?: "",

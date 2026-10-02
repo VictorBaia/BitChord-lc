@@ -3,8 +3,8 @@ package com.music.bitchord.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.music.bitchord.BitChordApplication
 import com.music.bitchord.R
-import com.music.bitchord.auth.AuthStore
 import com.music.bitchord.auth.GoogleAccountSession
 import com.music.bitchord.auth.YouTubeProfile
 import com.music.bitchord.auth.profileId
@@ -93,7 +93,7 @@ enum class LyricsProviderState {
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val authStore = AuthStore(app)
+    private val authStore = BitChordApplication.authStore
     private val navidromeActive: Boolean get() = NavidromeStore.config.value.isConfigured
 
     private val _signedIn = MutableStateFlow(authStore.isSignedIn)
@@ -2413,12 +2413,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     onFailure = { UiState.Error(it.friendly()) },
                 )
                 browseId.startsWith("nd:album:") -> {
-                    NavidromeRepository.album(browseId).fold(
+                    NavidromeRepository.album(
+                        browseId,
+                        text(R.string.more_from_artist),
+                        text(R.string.recommended_albums),
+                    ).fold(
                         onSuccess = { page ->
                             artwork = page.thumbnailUrl
                             name = page.title
                             credit = page.subtitle
                             description = page.description
+                            sections = page.sections
                             page.songs
                         },
                         onFailure = { UiState.Error(it.friendly()) },
@@ -2700,7 +2705,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     LocalMediaRepository.getLocalMusic(context)
                         .ifEmpty { error(text(R.string.no_local_audio_found)) }
                 }
-                browseId.startsWith("nd:album:") -> NavidromeRepository.album(browseId)
+                browseId.startsWith("nd:album:") -> NavidromeRepository.album(
+                    browseId,
+                    text(R.string.more_from_artist),
+                    text(R.string.recommended_albums),
+                )
                     .map { (it.songs as? UiState.Success)?.data.orEmpty() }
                 browseId.startsWith("nd:playlist:") -> NavidromeRepository.playlist(browseId)
                     .map { (it.songs as? UiState.Success)?.data.orEmpty() }

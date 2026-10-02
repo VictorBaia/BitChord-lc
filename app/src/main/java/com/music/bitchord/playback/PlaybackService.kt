@@ -666,6 +666,12 @@ class PlaybackService : MediaLibraryService() {
     private var discordPresenceUp = false
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var navidromePlaybackReportVersion: Int? = null
+    private var navidromePlaybackReportChecked = false
+    private var navidromePlaybackState: String? = null
+    private var navidromePlaybackSongId: String? = null
+    private var navidromePlaybackPositionMs: Long = 0L
+    private var navidromePlaybackTicker: Job? = null
 
     /**
      * Binds playback to a Listen Together party, when there is one.
@@ -801,6 +807,11 @@ class PlaybackService : MediaLibraryService() {
             val song = exoPlayer.currentMediaItem?.toSong()
             val durationMs = exoPlayer.duration.takeIf { it > 0 }
             scrobbleManager?.onPlayerStateChanged(isPlaying, song, durationMs)
+            reportNavidromePlayback(
+                song = song,
+                state = if (isPlaying) "playing" else if (exoPlayer.playWhenReady) "starting" else "paused",
+                positionMs = exoPlayer.currentPosition,
+            )
 
             // The listening record has to be told a pause happened, not merely
             // stop being told about play: its sampler measures the gap between
@@ -848,6 +859,15 @@ class PlaybackService : MediaLibraryService() {
          */
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             publishWidgetState(playing = playWhenReady)
+            val exoPlayer = player
+            val song = exoPlayer?.currentMediaItem?.toSong()
+            if (song != null) {
+                reportNavidromePlayback(
+                    song = song,
+                    state = if (playWhenReady) "starting" else "paused",
+                    positionMs = exoPlayer.currentPosition,
+                )
+            }
             // The only place the *reason* can be read. A party has to tell a
             // pause the listener asked for from one another app imposed, and
             // [Player] does not keep the answer around to be asked later.
@@ -868,6 +888,13 @@ class PlaybackService : MediaLibraryService() {
         ) {
             val exoPlayer = player ?: return
             if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                exoPlayer.currentMediaItem?.toSong()?.let { song ->
+                    reportNavidromePlayback(
+                        song = song,
+                        state = if (exoPlayer.isPlaying) "playing" else if (exoPlayer.playWhenReady) "starting" else "paused",
+                        positionMs = newPosition.positionMs,
+                    )
+                }
                 if (exoPlayer.isPlaying) pushDiscordPresence(exoPlayer)
                 updateLyricSubtitle()
             }
@@ -892,6 +919,10 @@ class PlaybackService : MediaLibraryService() {
             ) {
                 swappingMediaId = null
                 return
+            }
+
+            exoPlayer.currentMediaItem?.toSong()?.let { song ->
+                reportNavidromePlayback(song, "starting", exoPlayer.currentPosition)
             }
 
             // No crossfade case to allow for here any more. A blended advance
@@ -948,6 +979,7 @@ class PlaybackService : MediaLibraryService() {
             // session is currently pointed at.
             val exoPlayer = player ?: return
             if (state == Player.STATE_ENDED) {
+                reportNavidromePlayback(null, "stopped", exoPlayer.currentPosition)
                 SleepTimer.cancel()
                 // The queue ran dry, so no transition will ever close the last
                 // track out. Without this its history entry keeps whatever
@@ -1238,8 +1270,9 @@ class PlaybackService : MediaLibraryService() {
                     .apply {
                         // A transcoder cannot answer an HTTP byte range. Translate the
                         // extractor's byte position to Subsonic's temporal offset and
-                        // make the new response begin at its own byte zero. CacheDataSource
-                        // still writes these bytes into the original absolute hole.
+                        // make the new response begin at its own byte zero. Transcoded
+                        // Navidrome requests bypass AudioCache, so these restarted bytes
+                        // can never be written into an unrelated absolute cache hole.
                         if (timeOffsetSeconds > 0) {
                             setPosition(0)
                             setLength(C.LENGTH_UNSET.toLong())
@@ -1516,7 +1549,10 @@ class PlaybackService : MediaLibraryService() {
             // Innermost, so it chunks the real googlevideo URL the resolver
             // above has already substituted in — see [ChunkedDataSource] for
             // why an open-ended read of one is worth avoiding.
-            ChunkedDataSource.Factory(OkHttpDataSource.Factory(Http.client), STREAM_CHUNK_BYTES),
+            ChunkedDataSource.Factory(
+                NavidromeTranscodeDataSourceFactory(OkHttpDataSource.Factory(Http.client)),
+                STREAM_CHUNK_BYTES,
+            ),
         ) { dataSpec ->
             // Wrapped rather than folded into the resolver above so the record
             // is made in one place for every branch of it, and made from what
@@ -1538,11 +1574,10 @@ class PlaybackService : MediaLibraryService() {
         )
         AudioCache.setUpstream(defaultDataSourceFactory)
         val extractorsFactory = DefaultExtractorsFactory()
-            // Navidrome's transcoded MP3/AAC response is progressive and may not
-            // expose an intrinsic seek table. Its bitrate is fixed by our request,
-            // so Media3 can safely publish an approximate seek map. "Always" is
-            // required because some servers omit Content-Length until their
-            // transcoding cache has finished producing the file.
+            // Navidrome's transcoded MP3/AAC response may not expose an intrinsic
+            // seek table. Keep constant-bitrate seeking available; estimated
+            // lengths on uncached transcodes are normalized by
+            // NavidromeTranscodeDataSource before Media3 builds its seek map.
             .setConstantBitrateSeekingEnabled(true)
             .setConstantBitrateSeekingAlwaysEnabled(true)
         mediaSourceFactory = DefaultMediaSourceFactory(
@@ -5904,6 +5939,90 @@ class PlaybackService : MediaLibraryService() {
                             durationMs = exoPlayer.duration.takeIf { it > 0 },
                         )
                     }
+                }
+            }
+        }
+    }
+
+    /** Reports only Navidrome tracks; Last.fm settings do not gate server presence. */
+    private fun reportNavidromePlayback(song: Song?, state: String, positionMs: Long) {
+        val trackId = song?.videoId?.takeIf { NavidromeIds.rawTrack(it) != null }
+        if (trackId == null) {
+            if (navidromePlaybackSongId != null) {
+                sendNavidromePlayback(navidromePlaybackSongId, "stopped", navidromePlaybackPositionMs)
+            }
+            navidromePlaybackSongId = null
+            navidromePlaybackState = null
+            navidromePlaybackTicker?.cancel()
+            navidromePlaybackTicker = null
+            return
+        }
+
+        if (state == "stopped") {
+            if (navidromePlaybackSongId == trackId) {
+                sendNavidromePlayback(trackId, "stopped", positionMs)
+                navidromePlaybackSongId = null
+                navidromePlaybackState = null
+                navidromePlaybackTicker?.cancel()
+                navidromePlaybackTicker = null
+            }
+            return
+        }
+
+        if (navidromePlaybackSongId != null && navidromePlaybackSongId != trackId) {
+            sendNavidromePlayback(navidromePlaybackSongId, "stopped", navidromePlaybackPositionMs)
+        }
+        val changedTrack = navidromePlaybackSongId != trackId
+        navidromePlaybackSongId = trackId
+        navidromePlaybackPositionMs = positionMs.coerceAtLeast(0L)
+        if (changedTrack || navidromePlaybackState != state) {
+            navidromePlaybackState = state
+            sendNavidromePlayback(trackId, state, navidromePlaybackPositionMs)
+        }
+        if (state == "playing" && navidromePlaybackTicker?.isActive != true) {
+            navidromePlaybackTicker = scope.launch {
+                while (isActive && navidromePlaybackSongId == trackId) {
+                    delay(30_000L)
+                    val active = player ?: break
+                    if (!active.isPlaying || active.currentMediaItem?.mediaId != trackId) break
+                    navidromePlaybackPositionMs = active.currentPosition.coerceAtLeast(0L)
+                    sendNavidromePlayback(trackId, "playing", navidromePlaybackPositionMs)
+                }
+            }
+        } else if (state != "playing") {
+            navidromePlaybackTicker?.cancel()
+            navidromePlaybackTicker = null
+        }
+    }
+
+    private fun sendNavidromePlayback(trackId: String?, state: String, positionMs: Long) {
+        if (trackId == null || NavidromeIds.rawTrack(trackId) == null || !NavidromeStore.config.value.isConfigured) return
+        scope.launch {
+            if (!navidromePlaybackReportChecked) {
+                val result = NavidromeRepository.playbackReportVersion()
+                navidromePlaybackReportVersion = result.getOrNull()
+                navidromePlaybackReportChecked = true
+            }
+            // A legacy report for a former track must not overwrite the newer
+            // track's now-playing row if the queue moved while capability was
+            // being discovered.
+            if (state != "stopped" && navidromePlaybackSongId != trackId) return@launch
+            val reportResult = if (navidromePlaybackReportVersion != null) {
+                NavidromeRepository.reportPlayback(trackId, positionMs, state)
+            } else if (state == "starting" || state == "playing") {
+                // Legacy Subsonic has no pause/position endpoint, but its now-
+                // playing entry is still useful and accepted by Navidrome.
+                NavidromeRepository.scrobble(trackId, submission = false)
+            } else {
+                return@launch
+            }
+            if (reportResult.isFailure && navidromePlaybackReportVersion != null) {
+                // An advertised but unusable extension must not silently leave
+                // the Navidrome Now Playing panel empty. Fall back to legacy
+                // now-playing updates for active tracks.
+                if (state == "starting" || state == "playing") {
+                    navidromePlaybackReportVersion = null
+                    NavidromeRepository.scrobble(trackId, submission = false)
                 }
             }
         }

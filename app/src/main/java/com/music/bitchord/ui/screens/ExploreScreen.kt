@@ -40,8 +40,10 @@ import com.music.bitchord.R
 import com.music.bitchord.data.model.HomeShelf
 import com.music.bitchord.data.model.MoodGenre
 import com.music.bitchord.data.model.MoodGenreSection
+import com.music.bitchord.data.model.ROW_ART_PX
 import com.music.bitchord.data.model.ShelfItem
 import com.music.bitchord.data.model.UiState
+import com.music.bitchord.data.model.artworkAt
 import com.music.bitchord.ui.components.MessageState
 import com.music.bitchord.ui.components.PAGE_GUTTER
 import com.music.bitchord.ui.components.PullToRefresh
@@ -157,7 +159,7 @@ private fun MoodGenreCard(
         ) {
             item.thumbnailUrl?.let { artwork ->
                 AsyncImage(
-                    model = artwork,
+                    model = artwork.artworkAt(ROW_ART_PX),
                     contentDescription = null,
                     contentScale = androidx.compose.ui.layout.ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),

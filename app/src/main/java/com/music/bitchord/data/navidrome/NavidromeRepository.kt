@@ -67,13 +67,48 @@ object NavidromeRepository {
         }
     }
 
-    suspend fun album(browseId: String): Result<DetailPage> = call {
+    suspend fun album(
+        browseId: String,
+        moreFromArtistTitle: String,
+        recommendedTitle: String,
+    ): Result<DetailPage> = call {
         val id = requireNotNull(NavidromeIds.rawAlbum(browseId)) { "Not a Navidrome album" }
         val album = get("getAlbum.view", mapOf("id" to id)).body.getJSONObject("album")
         val info = runCatching {
             get("getAlbumInfo2.view", mapOf("id" to id)).body.optJSONObject("albumInfo")
         }.getOrNull()
         val page = NavidromeMapper.albumDetail(album)
+        val artistId = album.optString("artistId").ifBlank {
+            album.optJSONArray("artists")?.optJSONObject(0)?.optString("id").orEmpty()
+        }
+        val currentAlbumId = album.optString("id")
+        val sameArtist = if (artistId.isNotBlank()) {
+            runCatching {
+                val artistPage = get("getArtist.view", mapOf("id" to artistId))
+                    .body.optJSONObject("artist") ?: org.json.JSONObject()
+                NavidromeMapper.values(artistPage, "album").map(NavidromeMapper::album)
+            }.getOrDefault(emptyList())
+        } else emptyList()
+        val similarAlbums = if (artistId.isNotBlank()) {
+            runCatching {
+                val info = get("getArtistInfo2.view", mapOf("id" to artistId, "count" to "8"))
+                    .body.optJSONObject("artistInfo2")
+                NavidromeMapper.values(info ?: org.json.JSONObject(), "similarArtist")
+                    .take(5)
+                    .flatMap { similarArtist ->
+                        val similarId = similarArtist.optString("id")
+                        if (similarId.isBlank()) emptyList() else {
+                            val artistPage = get("getArtist.view", mapOf("id" to similarId))
+                                .body.optJSONObject("artist") ?: org.json.JSONObject()
+                            NavidromeMapper.values(artistPage, "album").map(NavidromeMapper::album)
+                        }
+                    }
+            }.getOrDefault(emptyList())
+        } else emptyList()
+        val recommendationSections = listOf(
+            HomeShelf(moreFromArtistTitle.format(page.subtitle), sameArtist.filterNot { it.browseId == NavidromeIds.album(currentAlbumId) }.distinctBy { it.browseId }.take(10).map { it.toShelfItem() }),
+            HomeShelf(recommendedTitle, similarAlbums.filterNot { it.browseId == NavidromeIds.album(currentAlbumId) }.distinctBy { it.browseId }.take(10).map { it.toShelfItem() }),
+        ).filter { it.items.isNotEmpty() }
         val externalDescription = if (info?.optString("notes").isNullOrBlank()) {
             NavidromeAlbumEnrichment.description(
                 cacheId = "${NavidromeStore.config.value.host()}:$id",
@@ -89,6 +124,7 @@ object NavidromeRepository {
                 albumReleaseYear(album)?.toString(),
             ).joinToString(" • "),
             description = info?.optString("notes")?.takeIf(String::isNotBlank) ?: externalDescription,
+            sections = recommendationSections,
         )
     }
 
@@ -200,6 +236,14 @@ object NavidromeRepository {
     }
 
     suspend fun songLyricsVersion(): Result<Int?> = call {
+        openSubsonicExtensionVersion("songLyrics")
+    }
+
+    suspend fun playbackReportVersion(): Result<Int?> = call {
+        openSubsonicExtensionVersion("playbackReport")
+    }
+
+    private suspend fun NavidromeClient.openSubsonicExtensionVersion(name: String): Int? {
         val body = get("getOpenSubsonicExtensions.view").body
         val raw = body.opt("openSubsonicExtensions")
         val extensions = when (raw) {
@@ -207,8 +251,8 @@ object NavidromeRepository {
             is org.json.JSONObject -> NavidromeMapper.values(raw, "openSubsonicExtension")
             else -> emptyList()
         }
-        val extension = extensions.firstOrNull { it.optString("name").equals("songLyrics", true) }
-        when (val versions = extension?.opt("versions")) {
+        val extension = extensions.firstOrNull { it.optString("name").equals(name, true) }
+        return when (val versions = extension?.opt("versions")) {
             is org.json.JSONArray -> (0 until versions.length()).maxOfOrNull { versions.optInt(it) }
             is Number -> versions.toInt()
             else -> extension?.optInt("version")?.takeIf { it > 0 }
@@ -274,11 +318,19 @@ object NavidromeRepository {
         timeOffsetSeconds: Long = 0,
     ): Result<SourceStream> = call {
         val id = requireNotNull(NavidromeIds.rawTrack(videoId)) { "Not a Navidrome track" }
-        val song = get("getSong.view", mapOf("id" to id)).body.getJSONObject("song")
+        val songResponse = get("getSong.view", mapOf("id" to id))
+        val song = songResponse.body.getJSONObject("song")
         val parameters = mutableMapOf("id" to id)
         quality.maxKbps?.let { parameters["maxBitRate"] = it.toString() }
         quality.format?.let { parameters["format"] = it }
-        if (quality.format != null) parameters["estimateContentLength"] = "true"
+        if (quality.format != null) {
+            parameters["estimateContentLength"] = "true"
+            if (needsEstimatedLengthCorrection(songResponse.serverVersion)) {
+                // Internal marker consumed and stripped by the app's data
+                // source; it is never sent to Navidrome.
+                parameters["bitchordCorrectEstimatedLength"] = "true"
+            }
+        }
         if (quality.format != null && timeOffsetSeconds > 0) {
             parameters["timeOffset"] = timeOffsetSeconds.toString()
         }
@@ -297,6 +349,25 @@ object NavidromeRepository {
     suspend fun scrobble(videoId: String, submission: Boolean, timeMillis: Long = System.currentTimeMillis()): Result<Unit> = call {
         val id = requireNotNull(NavidromeIds.rawTrack(videoId)) { "Not a Navidrome track" }
         get("scrobble.view", mapOf("id" to id, "submission" to submission.toString(), "time" to timeMillis.toString()))
+        Unit
+    }
+
+    suspend fun reportPlayback(
+        videoId: String,
+        positionMs: Long,
+        state: String,
+    ): Result<Unit> = call {
+        require(state in setOf("starting", "playing", "paused", "stopped")) { "Invalid playback state" }
+        val id = requireNotNull(NavidromeIds.rawTrack(videoId)) { "Not a Navidrome track" }
+        get("reportPlayback.view", mapOf(
+            "mediaId" to id,
+            "mediaType" to "song",
+            "positionMs" to positionMs.coerceAtLeast(0L).toString(),
+            "state" to state,
+            // State reporting only; existing scrobble submission remains the
+            // sole source of play-count updates, avoiding duplicate scrobbles.
+            "ignoreScrobble" to "true",
+        ))
         Unit
     }
 
@@ -416,6 +487,13 @@ object NavidromeRepository {
         album.optJSONObject("originalReleaseDate")?.optInt("year")?.takeIf { it > 0 }
             ?: album.optJSONObject("releaseDate")?.optInt("year")?.takeIf { it > 0 }
             ?: album.optInt("year").takeIf { it > 0 }
+
+    private fun needsEstimatedLengthCorrection(version: String): Boolean {
+        val parts = Regex("^(\\d+)\\.(\\d+)\\.(\\d+)").find(version)?.groupValues
+            ?.drop(1)?.mapNotNull(String::toIntOrNull) ?: return true
+        val (major, minor, patch) = parts
+        return major == 0 && (minor < 64 || (minor == 64 && patch == 0))
+    }
 
     private fun albumReleaseKey(album: org.json.JSONObject): String {
         fun date(name: String): String? = album.optJSONObject(name)?.let { value ->

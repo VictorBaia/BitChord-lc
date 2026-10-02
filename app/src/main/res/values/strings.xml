@@ -1095,6 +1095,8 @@
     <string name="shelf_mixed_for_you">Mixed for you</string>
 
     <string name="shelf_similar_to">Similar to %1$s</string>
+    <string name="more_from_artist">More from %1$s</string>
+    <string name="recommended_albums">You may also like</string>
 
     <string name="shelf_forgotten_favorites">Forgotten favorites</string>
 

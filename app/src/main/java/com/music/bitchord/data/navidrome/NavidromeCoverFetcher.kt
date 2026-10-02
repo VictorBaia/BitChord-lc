@@ -19,10 +19,10 @@ import okio.source
 /** Auth is generated while Coil fetches the picture, never persisted in UI data. */
 class NavidromeCoverFetcher private constructor(private val data: String) : Fetcher {
     override suspend fun fetch(): FetchResult {
-        val id = requireNotNull(NavidromeIds.coverId(data))
+        val (id, requestedSize) = requireNotNull(NavidromeIds.coverIdAndSize(data))
         val client = requireNotNull(NavidromeRepository.client()) { "Navidrome is not configured" }
         val bytes = withContext(Dispatchers.IO) {
-            Http.client.newCall(Request.Builder().url(client.coverArtUrl(id)).build()).execute().use { response ->
+            Http.client.newCall(Request.Builder().url(client.coverArtUrl(id, requestedSize)).build()).execute().use { response ->
                 check(response.isSuccessful) { "Cover request failed: HTTP ${response.code}" }
                 requireNotNull(response.body).bytes()
             }

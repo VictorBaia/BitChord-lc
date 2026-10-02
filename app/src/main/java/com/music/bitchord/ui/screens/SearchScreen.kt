@@ -31,6 +31,7 @@ import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.NorthWest
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.QueueMusic
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.ButtonDefaults
@@ -94,6 +95,7 @@ fun SearchScreen(
     onSongSwipe: (Song) -> Unit,
     onTopResultPlay: (Song) -> Unit,
     onTopResultPlaylist: (Song) -> Unit,
+    onTopResultQueue: (Song) -> Unit,
     onBrowseClick: (BrowseItem) -> Unit,
     /**
      * Holding an album or playlist hit rather than tapping it — the same menu
@@ -261,6 +263,7 @@ fun SearchScreen(
                                 song = topResult.song,
                                 onPlay = { onTopResultPlay(topResult.song) },
                                 onPlaylist = { onTopResultPlaylist(topResult.song) },
+                                onQueue = { onTopResultQueue(topResult.song) },
                                 onLongPress = { onSongLongPress(topResult.song) },
                             )
                         }
@@ -350,6 +353,7 @@ private fun TopResultCard(
     song: Song,
     onPlay: () -> Unit,
     onPlaylist: () -> Unit,
+    onQueue: () -> Unit,
     onLongPress: () -> Unit,
 ) {
     Column(
@@ -397,7 +401,10 @@ private fun TopResultCard(
             }
         }
         Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             OutlinedButton(
                 onClick = onPlay,
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
@@ -413,6 +420,14 @@ private fun TopResultCard(
                 Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
                 Text(stringResource(R.string.playlist_action))
+            }
+            OutlinedButton(
+                onClick = onQueue,
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
+            ) {
+                Icon(Icons.Rounded.QueueMusic, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text(stringResource(R.string.add_to_queue))
             }
         }
     }

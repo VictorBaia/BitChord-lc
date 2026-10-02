@@ -451,7 +451,22 @@ object AudioCache {
 
             override fun open(dataSpec: DataSpec): Long {
                 val scheme = dataSpec.uri.scheme
-                activeDs = if (scheme == "file" || scheme == "content") {
+                val transcodedNavidrome = dataSpec.uri.authority == "navidrome" &&
+                    com.music.bitchord.data.navidrome.NavidromeStore.config.value.streamQuality(
+                        metered = AppSettings.meteredConnection.value == true,
+                    ).format != null
+                activeDs = if (scheme == "file" || scheme == "content" || transcodedNavidrome) {
+                    // A Navidrome transcode is a newly generated progressive
+                    // stream, not a byte-addressable copy of the source file.
+                    // On a cache miss CacheDataSource reopens at the missing
+                    // absolute byte. The resolver can only translate that to
+                    // Subsonic's timeOffset, whose response starts again at
+                    // byte zero; writing it into that absolute cache hole
+                    // splices unrelated container offsets together. Besides
+                    // decoder stalls, the corrupt tail can keep the timeline
+                    // alive for tens of seconds after audible audio ends.
+                    // Stream it directly instead. ORIGINAL remains cached and
+                    // seekable by byte exactly as before.
                     upstreamDs
                 } else {
                     cacheDs

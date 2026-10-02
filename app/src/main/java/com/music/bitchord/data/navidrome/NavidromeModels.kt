@@ -1,5 +1,6 @@
 package com.music.bitchord.data.navidrome
 
+import android.net.Uri
 import com.music.bitchord.data.model.BrowseItem
 import com.music.bitchord.data.model.BrowseType
 import com.music.bitchord.data.model.DetailPage
@@ -25,11 +26,35 @@ object NavidromeIds {
     fun playlist(id: String) = "$PLAYLIST$id"
     fun genre(id: String) = "$GENRE$id"
     fun cover(id: String) = NavidromeArtworkProvider.uri(id).toString()
+    /** Stable Coil model for one cover at one server-side size bucket. */
+    fun sizedCover(id: String, size: Int): String =
+        "bitchord://navidrome-cover/${Uri.encode(id)}?size=${sizeBucket(size)}"
+
+    fun coverIdAndSize(value: String): Pair<String, Int?>? {
+        val uri = runCatching { android.net.Uri.parse(value) }.getOrNull() ?: return null
+        val id = when {
+            value.startsWith("bitchord://navidrome-cover/") ->
+                uri.pathSegments.lastOrNull()
+            value.startsWith(NavidromeArtworkProvider.URI_PREFIX) ->
+                uri.lastPathSegment
+            else -> null
+        }?.takeIf { it.isNotBlank() } ?: return null
+        val size = uri.getQueryParameter("size")?.toIntOrNull()?.let(::sizeBucket)
+        return id to size
+    }
+
+    fun sizeBucket(size: Int): Int = when {
+        size <= 160 -> 160
+        size <= 640 -> 640
+        size <= 960 -> 960
+        else -> 1200
+    }
+
     fun coverId(url: String): String? = when {
         url.startsWith("bitchord://navidrome-cover/") -> url.removePrefix("bitchord://navidrome-cover/")
         url.startsWith(NavidromeArtworkProvider.URI_PREFIX) -> url.removePrefix(NavidromeArtworkProvider.URI_PREFIX)
         else -> null
-    }?.takeIf { it.isNotBlank() }
+    }?.substringBefore('?')?.let { android.net.Uri.decode(it) }?.takeIf { it.isNotBlank() }
 
     fun rawTrack(id: String): String? = id.removePrefix(TRACK).takeIf {
         id.startsWith(TRACK) && id != LIKED && !id.startsWith(ALBUM) && !id.startsWith(ARTIST) &&
@@ -54,7 +79,13 @@ internal object NavidromeMapper {
             .takeIf { it.isNotBlank() }?.let(NavidromeIds::artist),
         albumId = value.optString("albumId").takeIf { it.isNotBlank() }?.let(NavidromeIds::album),
         albumName = value.optString("album").takeIf { it.isNotBlank() },
-        isExplicit = value.optString("explicitStatus").equals("explicit", ignoreCase = true),
+        isExplicit = value.optString("explicitStatus").trim().lowercase().let { status ->
+            when (status) {
+                "explicit" -> true
+                "clean" -> false
+                else -> null
+            }
+        },
         sourceQuality = value.optString("suffix").takeIf { it.isNotBlank() }?.uppercase(),
     )
 

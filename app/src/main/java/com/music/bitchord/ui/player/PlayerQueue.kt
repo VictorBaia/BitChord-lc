@@ -76,7 +76,9 @@ import com.music.bitchord.ui.components.thumbnailBorder
 import com.music.bitchord.ui.components.rememberRemoteArtworkUrl
 import com.music.bitchord.ui.icons.BitChordIcons
 import com.music.bitchord.data.model.QueueTier
+import com.music.bitchord.data.model.ROW_ART_PX
 import com.music.bitchord.data.model.Song
+import com.music.bitchord.data.model.artworkAt
 import com.music.bitchord.playback.autoplaySectionStart
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -740,7 +742,7 @@ private fun InlineQueueRow(
             Spacer(Modifier.width(4.dp))
         }
         AsyncImage(
-            model = rememberRemoteArtworkUrl(song),
+            model = rememberRemoteArtworkUrl(song)?.artworkAt(ROW_ART_PX),
             contentDescription = null,
             modifier = Modifier
                 .size(44.dp)

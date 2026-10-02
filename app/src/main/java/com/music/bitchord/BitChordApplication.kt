@@ -43,16 +43,21 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
         // PlaybackService shares this process, so seeding the cookie here means
         // stream resolution is authenticated from the first play onwards.
         authStore = AuthStore(this)
+        // Read the source mode before optional YouTube initialization is
+        // scheduled. NavidromeStore only opens its encrypted preferences and
+        // publishes an in-memory config; it does not perform network I/O.
+        NavidromeStore.init(this)
         // Opened off the main thread, alongside everything below: none of these
         // reads a setting or the session, and between them they are the slowest
         // opens at startup — SourceRegistry's encrypted store most of all.
         // Started only once [AuthStore] exists, because both encrypted stores
         // share one keystore master key and a first launch must not have two
-        // threads racing to create it. Joined before onCreate returns, so
-        // nothing that runs after startup can see any of them half open.
+        // threads racing to create it. Optional work is allowed to finish
+        // after the first Activity frame.
+        val navidromeConfigured = NavidromeStore.config.value.isConfigured
         val backgroundInit = thread(name = "startup-init") {
             SourceRegistry.init(this)
-            InnerTubeXResolver.init(this)
+            if (!navidromeConfigured) InnerTubeXResolver.init(this)
             // Its own directory: canvas clips are looping video, not audio, and
             // belong in a cache AudioCache's own limit and eviction policy were
             // never sized for. See CanvasCache's doc for why this one exists at
@@ -73,7 +78,7 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
         // it: a play registered under the wrong account is indistinguishable, to
         // the listener, from one that was never registered at all. Fire and
         // forget — every caller works without it, just less precisely.
-        if (restoredSession != null) {
+        if (restoredSession != null && !navidromeConfigured) {
             // After the cookie, never before: setting the cookie clears any
             // channel the last session was acting as, so restoring the choice
             // first would restore it into the value about to be wiped.
@@ -82,7 +87,6 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
             CoroutineScope(Dispatchers.IO).launch { Innertube.ensureSessionScope() }
         }
         AppSettings.init(this, authStore)
-        NavidromeStore.init(this)
         // Restores a party this device is still a member of, so a process death
         // mid-session is something the rest of the party never sees. The socket
         // and the clock offset are not restored — both are re-established on
@@ -111,7 +115,9 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
         // listener's own session cookie needs a Context, and nothing in the
         // suspend call chain that reaches it (a track's canvas lookup) has
         // one to hand — see SpotifyToken's doc for why.
-        SpotifyToken.init(this)
+        if (!navidromeConfigured) {
+            SpotifyToken.init(this)
+        }
         // A sideloaded update is just a new APK over the old one, so app data —
         // including whatever the old build left in these caches — survives it
         // untouched. Wipe both on the first launch of a higher versionCode so a
@@ -126,7 +132,9 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
         }
         // Initialize LastFM with saved settings if available
         initLastfm()
-        backgroundInit.join()
+        // Do not hold Application.onCreate open for optional source/cache work.
+        // The first Activity frame must not wait for encrypted source storage,
+        // InnerTube setup, or Canvas cache creation.
     }
 
     /**
