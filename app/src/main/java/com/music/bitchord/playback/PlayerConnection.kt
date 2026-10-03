@@ -28,6 +28,8 @@ import com.music.bitchord.data.model.PlaybackSourceType
 import com.music.bitchord.data.model.QueueTier
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.navidrome.NavidromeIds
+import com.music.bitchord.data.navidrome.NavidromeStore
+import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.data.model.artworkAt
 import com.music.bitchord.data.sources.SourceRegistry
 import com.music.bitchord.data.sources.TrackMatcher
@@ -572,7 +574,7 @@ fun Song.toMediaItem(): MediaItem {
         ?: Downloads.verifiedSavedUri(videoId)
     val uriString = offlineUri ?: when {
         videoId.startsWith("content://") || videoId.startsWith("file://") -> videoId
-        navidromeTrack != null -> "bitchord://navidrome?id=${Uri.encode(navidromeTrack)}${matchQuery()}"
+        navidromeTrack != null -> "bitchord://navidrome?id=${Uri.encode(navidromeTrack)}${matchQuery()}${navidromeQualityQuery()}"
         // Title, artist and runtime ride along in the URI because they are what
         // a cross-source match is made on, and the resolver runs on ExoPlayer's
         // loader thread with nothing but a DataSpec in hand — see
@@ -670,6 +672,14 @@ fun Song.toMediaItem(): MediaItem {
     )
     .build()
 }
+
+/** Freezes the Navidrome rendition choice on this MediaItem. */
+private fun navidromeQualityQuery(): String = NavidromeStore.config.value
+    .streamQuality(metered = AppSettings.meteredConnection.value == true)
+    .let { quality -> buildString {
+        append("&qf=").append(Uri.encode(quality.format ?: "original"))
+        quality.maxKbps?.let { append("&qk=").append(it) }
+    } }
 
 /**
  * The current song reopened through YouTube alone, bypassing every substitute

@@ -323,14 +323,6 @@ object NavidromeRepository {
         val parameters = mutableMapOf("id" to id)
         quality.maxKbps?.let { parameters["maxBitRate"] = it.toString() }
         quality.format?.let { parameters["format"] = it }
-        if (quality.format != null) {
-            parameters["estimateContentLength"] = "true"
-            if (needsEstimatedLengthCorrection(songResponse.serverVersion)) {
-                // Internal marker consumed and stripped by the app's data
-                // source; it is never sent to Navidrome.
-                parameters["bitchordCorrectEstimatedLength"] = "true"
-            }
-        }
         if (quality.format != null && timeOffsetSeconds > 0) {
             parameters["timeOffset"] = timeOffsetSeconds.toString()
         }
@@ -343,6 +335,7 @@ object NavidromeRepository {
         SourceStream(
             url = authenticatedUrl("stream.view", parameters),
             format = quality.format?.let { StreamFormat(codec = it, kbps = quality.maxKbps) } ?: originalFormat,
+            durationSec = song.optInt("duration").takeIf { it > 0 },
         )
     }
 
@@ -487,13 +480,6 @@ object NavidromeRepository {
         album.optJSONObject("originalReleaseDate")?.optInt("year")?.takeIf { it > 0 }
             ?: album.optJSONObject("releaseDate")?.optInt("year")?.takeIf { it > 0 }
             ?: album.optInt("year").takeIf { it > 0 }
-
-    private fun needsEstimatedLengthCorrection(version: String): Boolean {
-        val parts = Regex("^(\\d+)\\.(\\d+)\\.(\\d+)").find(version)?.groupValues
-            ?.drop(1)?.mapNotNull(String::toIntOrNull) ?: return true
-        val (major, minor, patch) = parts
-        return major == 0 && (minor < 64 || (minor == 64 && patch == 0))
-    }
 
     private fun albumReleaseKey(album: org.json.JSONObject): String {
         fun date(name: String): String? = album.optJSONObject(name)?.let { value ->

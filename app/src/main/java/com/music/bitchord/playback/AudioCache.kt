@@ -400,9 +400,9 @@ object AudioCache {
                 }
             }
             ?: spec.uri.takeIf { it.authority == "navidrome" }?.getQueryParameter("id")?.let { id ->
-                "navidrome|$id|${com.music.bitchord.data.navidrome.NavidromeStore.config.value.streamQuality(
-                    metered = AppSettings.meteredConnection.value == true,
-                ).name}"
+                val format = spec.uri.getQueryParameter("qf") ?: "original"
+                val bitrate = spec.uri.getQueryParameter("qk") ?: "0"
+                "navidrome|$id|$format|$bitrate"
             }
             ?: spec.key
             ?: spec.uri.toString()
@@ -452,9 +452,7 @@ object AudioCache {
             override fun open(dataSpec: DataSpec): Long {
                 val scheme = dataSpec.uri.scheme
                 val transcodedNavidrome = dataSpec.uri.authority == "navidrome" &&
-                    com.music.bitchord.data.navidrome.NavidromeStore.config.value.streamQuality(
-                        metered = AppSettings.meteredConnection.value == true,
-                    ).format != null
+                    dataSpec.uri.getQueryParameter("qf")?.let { it != "original" } == true
                 activeDs = if (scheme == "file" || scheme == "content" || transcodedNavidrome) {
                     // A Navidrome transcode is a newly generated progressive
                     // stream, not a byte-addressable copy of the source file.

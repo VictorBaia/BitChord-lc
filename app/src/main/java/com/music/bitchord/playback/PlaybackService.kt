@@ -1251,33 +1251,22 @@ class PlaybackService : MediaLibraryService() {
             if (dataSpec.uri.authority == "navidrome") {
                 val id = dataSpec.uri.getQueryParameter("id")
                     ?: throw java.io.IOException("Navidrome stream is missing its id")
-                val quality = NavidromeStore.config.value.streamQuality(metered = AppSettings.meteredConnection.value == true)
+                val quality = dataSpec.uri.getQueryParameter("qf")?.let { format ->
+                    if (format == "original") com.music.bitchord.data.navidrome.NavidromeStreamQuality.ORIGINAL
+                    else com.music.bitchord.data.navidrome.NavidromeStreamQuality.entries
+                        .firstOrNull { it.format == format && it.maxKbps == dataSpec.uri.getQueryParameter("qk")?.toIntOrNull() }
+                } ?: NavidromeStore.config.value.streamQuality(metered = AppSettings.meteredConnection.value == true)
                 val mediaId = mediaIdIn(dataSpec.uri) ?: "nd:$id"
-                val timeOffsetSeconds = if (quality.maxKbps != null && dataSpec.position > 0) {
-                    (dataSpec.position * 8L / (quality.maxKbps * 1000L)).coerceAtLeast(0L)
-                } else {
-                    0L
-                }
                 val stream = runBlocking(about) {
                     withTimeout(RESOLVE_TIMEOUT_MS) {
-                        NavidromeRepository.stream(mediaId, quality, timeOffsetSeconds).getOrThrow()
+                        NavidromeRepository.stream(mediaId, quality).getOrThrow()
                     }
                 }
+                NavidromeStreaming.register(id, stream.durationSec)
                 NerdStats.onSourceStream(mediaId, stream.format, "Navidrome")
                 NerdStats.recordSource(mediaId, "Navidrome")
                 return@Resolver dataSpec.buildUpon()
                     .setUri(Uri.parse(stream.url))
-                    .apply {
-                        // A transcoder cannot answer an HTTP byte range. Translate the
-                        // extractor's byte position to Subsonic's temporal offset and
-                        // make the new response begin at its own byte zero. Transcoded
-                        // Navidrome requests bypass AudioCache, so these restarted bytes
-                        // can never be written into an unrelated absolute cache hole.
-                        if (timeOffsetSeconds > 0) {
-                            setPosition(0)
-                            setLength(C.LENGTH_UNSET.toLong())
-                        }
-                    }
                     .build()
             }
             // A source-backed track is resolved by whichever source can serve
@@ -1550,7 +1539,7 @@ class PlaybackService : MediaLibraryService() {
             // above has already substituted in — see [ChunkedDataSource] for
             // why an open-ended read of one is worth avoiding.
             ChunkedDataSource.Factory(
-                NavidromeTranscodeDataSourceFactory(OkHttpDataSource.Factory(Http.client)),
+                NavidromeTranscodeDataSourceFactory(this, OkHttpDataSource.Factory(Http.client)),
                 STREAM_CHUNK_BYTES,
             ),
         ) { dataSpec ->
@@ -1573,13 +1562,7 @@ class PlaybackService : MediaLibraryService() {
             DefaultDataSource.Factory(this, resolvingFactory),
         )
         AudioCache.setUpstream(defaultDataSourceFactory)
-        val extractorsFactory = DefaultExtractorsFactory()
-            // Navidrome's transcoded MP3/AAC response may not expose an intrinsic
-            // seek table. Keep constant-bitrate seeking available; estimated
-            // lengths on uncached transcodes are normalized by
-            // NavidromeTranscodeDataSource before Media3 builds its seek map.
-            .setConstantBitrateSeekingEnabled(true)
-            .setConstantBitrateSeekingAlwaysEnabled(true)
+        val extractorsFactory = NavidromeStreaming.extractorsFactory()
         mediaSourceFactory = DefaultMediaSourceFactory(
             AudioCache.playbackFactory(defaultDataSourceFactory),
             extractorsFactory,
