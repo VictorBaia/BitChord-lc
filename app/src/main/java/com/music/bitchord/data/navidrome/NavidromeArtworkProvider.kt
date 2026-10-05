@@ -6,8 +6,6 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import com.music.bitchord.BuildConfig
-import com.music.bitchord.data.Http
-import okhttp3.Request
 import java.io.FileNotFoundException
 import kotlin.concurrent.thread
 
@@ -25,12 +23,9 @@ class NavidromeArtworkProvider : ContentProvider() {
         thread(name = "navidrome-artwork") {
             ParcelFileDescriptor.AutoCloseOutputStream(pipe[1]).use { output ->
                 runCatching {
-                    val client = requireNotNull(NavidromeRepository.client())
-                    Http.client.newCall(Request.Builder().url(client.coverArtUrl(coverId)).build())
-                        .execute().use { response ->
-                            if (!response.isSuccessful) throw FileNotFoundException("HTTP ${response.code}")
-                            requireNotNull(response.body).byteStream().use { it.copyTo(output) }
-                        }
+                    val appContext = requireNotNull(context).applicationContext
+                    NavidromeArtworkCache.getOrFetch(appContext, coverId, null)
+                        .inputStream().buffered().use { it.copyTo(output) }
                 }
             }
         }

@@ -2,7 +2,6 @@ package com.music.bitchord.playback
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
@@ -16,11 +15,10 @@ class NavidromeTranscodeDataSource(private val upstream: DataSource) : DataSourc
     override fun open(dataSpec: DataSpec): Long {
         val uri = dataSpec.uri
         if (uri.path?.endsWith("/stream.view") == true &&
-            !uri.getQueryParameter("format").isNullOrBlank() &&
+            uri.getQueryParameter("format") in setOf("aac", "mp3") &&
             NavidromeStreaming.isSeek(dataSpec.position)
         ) {
             val seconds = NavidromeStreaming.seekSeconds(dataSpec.position)
-            Log.d("TRANSDBG", "timeOffset seconds=$seconds")
             val seekUri = uri.buildUpon()
                 .appendQueryParameter("timeOffset", seconds.toString())
                 .build()

@@ -126,7 +126,10 @@ import com.music.bitchord.playback.smart.AutomixAnalysisSource
 import com.music.bitchord.playback.smart.VersionAudioAligner
 import com.music.bitchord.widget.MediaWidget
 import com.music.bitchord.widget.MediaWidgetSnapshot
+import com.music.bitchord.data.diagnostics.CrashReporter
+import com.music.bitchord.ui.player.latestLyricIndex
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -599,7 +602,7 @@ class PlaybackService : MediaLibraryService() {
     private val trackAnalyzer = com.music.bitchord.playback.smart.TrackAnalyzer(this, AudioCache)
 
     /** Shared with the crossfade's tail player, so both read the same disk cache. */
-    private var mediaSourceFactory: DefaultMediaSourceFactory? = null
+    private var mediaSourceFactory: androidx.media3.exoplayer.source.MediaSource.Factory? = null
 
     /** Last sampled position of the playing track, in seconds. */
     private var lastPositionSeconds = 0L
@@ -665,7 +668,13 @@ class PlaybackService : MediaLibraryService() {
      */
     private var discordPresenceUp = false
 
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val serviceExceptionHandler = CoroutineExceptionHandler { context, error ->
+        CrashReporter.recordNonFatal(
+            source = "PlaybackService:${context[Job]?.toString().orEmpty()}",
+            error = error,
+        )
+    }
+    private val scope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob() + serviceExceptionHandler)
     private var navidromePlaybackReportVersion: Int? = null
     private var navidromePlaybackReportChecked = false
     private var navidromePlaybackState: String? = null
@@ -694,6 +703,8 @@ class PlaybackService : MediaLibraryService() {
     private val swapVersionCommand = SessionCommand(ACTION_SWAP_VERSION, Bundle.EMPTY)
     private val reorderQueueCommand = SessionCommand(ACTION_REORDER_QUEUE, Bundle.EMPTY)
     private val queueDragCommand = SessionCommand(ACTION_QUEUE_DRAG, Bundle.EMPTY)
+    private var queueDragActive = false
+    private var queueDragDirty = false
 
     private var favoriteActionJob: Job? = null
     private var stationActionJob: Job? = null
@@ -969,6 +980,10 @@ class PlaybackService : MediaLibraryService() {
             // The player this fired on, which is by definition the one the
             // session is currently pointed at.
             val exoPlayer = player ?: return
+            CrashReporter.note(
+                "player_error media=${exoPlayer.currentMediaItem?.mediaId} code=${error.errorCode} " +
+                    "type=${error.cause?.javaClass?.simpleName.orEmpty()} message=${error.message.orEmpty()}",
+            )
             recoverFrom(error, exoPlayer)
         }
 
@@ -1041,6 +1056,15 @@ class PlaybackService : MediaLibraryService() {
             // The player this fired on, which is by definition the one the
             // session is currently pointed at.
             val exoPlayer = player ?: return
+            // Each crossed row still updates ExoPlayer immediately so Compose
+            // receives the real order and keeps the native placement animation.
+            // Persistence, prefetch and session-layout rebuilding are O(n) or
+            // can start I/O; doing all three for every crossed row is the source
+            // of the drag hitch. Commit them once when the finger is released.
+            if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED && queueDragActive) {
+                queueDragDirty = true
+                return
+            }
             if (exoPlayer.isPlaying) prefetchAround(exoPlayer)
             if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) {
                 saveQueueSnapshot(exoPlayer)
@@ -1265,8 +1289,13 @@ class PlaybackService : MediaLibraryService() {
                 NavidromeStreaming.register(id, stream.durationSec)
                 NerdStats.onSourceStream(mediaId, stream.format, "Navidrome")
                 NerdStats.recordSource(mediaId, "Navidrome")
+                val resolvedUri = Uri.parse(stream.url).buildUpon().apply {
+                    stream.durationSec?.takeIf { it > 0 }?.let {
+                        appendQueryParameter("bitchordDurationSec", it.toString())
+                    }
+                }.build()
                 return@Resolver dataSpec.buildUpon()
-                    .setUri(Uri.parse(stream.url))
+                    .setUri(resolvedUri)
                     .build()
             }
             // A source-backed track is resolved by whichever source can serve
@@ -1563,11 +1592,11 @@ class PlaybackService : MediaLibraryService() {
         )
         AudioCache.setUpstream(defaultDataSourceFactory)
         val extractorsFactory = NavidromeStreaming.extractorsFactory()
-        mediaSourceFactory = DefaultMediaSourceFactory(
+        mediaSourceFactory = NavidromeMediaSourceFactory(DefaultMediaSourceFactory(
             AudioCache.playbackFactory(defaultDataSourceFactory),
             extractorsFactory,
         )
-            .setLoadErrorHandlingPolicy(PermanentAwareLoadErrorPolicy())
+            .setLoadErrorHandlingPolicy(PermanentAwareLoadErrorPolicy()))
 
         configuredFloatOutput = shouldEnableFloatOutput()
         val exoPlayer = buildPlayer(
@@ -1617,6 +1646,29 @@ class PlaybackService : MediaLibraryService() {
         } else {
             MediaWidgetSnapshot.save(this, MediaWidgetSnapshot.EMPTY)
             MediaWidget.refresh(this)
+        }
+        scope.launch(Dispatchers.Main) {
+            NavidromeStore.config
+                .map { it.forceStreaming }
+                .distinctUntilChanged()
+                .drop(1)
+                .collectLatest {
+                    // Playback URIs capture whether a downloaded file was selected.
+                    // Rebuild Navidrome entries when this policy changes so the
+                    // switch also affects the current/restored queue, not only
+                    // tracks added after Settings was closed.
+                    if ((0 until exoPlayer.mediaItemCount).none {
+                            exoPlayer.getMediaItemAt(it).mediaId.startsWith("nd:")
+                        }) return@collectLatest
+                    val index = exoPlayer.currentMediaItemIndex.coerceAtLeast(0)
+                    val position = exoPlayer.currentPosition.coerceAtLeast(0L)
+                    val resume = exoPlayer.playWhenReady
+                    val items = (0 until exoPlayer.mediaItemCount)
+                        .map { exoPlayer.getMediaItemAt(it).toSong().toMediaItem() }
+                    exoPlayer.setMediaItems(items, index.coerceAtMost(items.lastIndex), position)
+                    exoPlayer.prepare()
+                    exoPlayer.playWhenReady = resume
+                }
         }
         // History pings fire once a track is actually audible — both when
         // playback starts and when the queue moves on while already playing.
@@ -3730,11 +3782,13 @@ class PlaybackService : MediaLibraryService() {
         if (mediaId in NerdStats.racingLossless.value ||
             (upgradeJob?.isActive == true && upgradeFor == mediaId)
         ) {
+            CrashReporter.note("quality_upgrade ignored=already_running media=$mediaId")
             TrackLog.d("BitChord", "manual upgrade ignored for $mediaId: upgrade already running", about = mediaId)
             return
         }
         val remaining = manualUpgradeThrottle.tryAcquire(SystemClock.elapsedRealtime())
         if (remaining > 0) {
+            CrashReporter.note("quality_upgrade ignored=cooldown media=$mediaId remainingMs=$remaining")
             TrackLog.d(
                 "BitChord",
                 "manual upgrade ignored for $mediaId: ${remaining}ms cooldown remaining",
@@ -3750,6 +3804,7 @@ class PlaybackService : MediaLibraryService() {
         // answers are discarded. The manifest is intentionally unaffected.
         SourceRegistry.clearCompletedAddonTrackCalls()
         QualityUpgrade.askByHand(mediaId)
+        CrashReporter.note("quality_upgrade requested media=$mediaId")
         TrackLog.d("BitChord", "upgrade asked for by hand for $mediaId", about = mediaId)
         lookForBetterCopy(player)
     }
@@ -6377,6 +6432,7 @@ class PlaybackService : MediaLibraryService() {
         val trackDurationMs = (player?.duration ?: 0L).takeIf { it > 0 } ?: 0L
 
         serviceLyricsJob?.cancel()
+        val requestedMediaId = currentSong.videoId
         serviceLyricsJob = scope.launch(Dispatchers.IO) {
             val localUri = currentSong.localUri
             var lines: List<LyricLine>? = null
@@ -6397,6 +6453,7 @@ class PlaybackService : MediaLibraryService() {
                 lines = found?.lines
             }
             withContext(Dispatchers.Main) {
+                if (player?.currentMediaItem?.mediaId != requestedMediaId) return@withContext
                 serviceLyrics = lines
                 if (player?.isPlaying == true) {
                     updateLyricSubtitle()
@@ -6427,7 +6484,7 @@ class PlaybackService : MediaLibraryService() {
         val lines = serviceLyrics
         val pos = exoPlayer.currentPosition
         val subtitleText = if (lines != null && lines.isNotEmpty() && AppSettings.syncedLyrics.value) {
-            val idx = lines.indexOfLast { it.timeMs <= pos }
+            val idx = latestLyricIndex(lines, pos)
             val currentLine = lines.getOrNull(idx)
             if (currentLine != null && !currentLine.isGap && currentLine.text.isNotBlank()) {
                 "♪ ${currentLine.text}"
@@ -6811,10 +6868,24 @@ class PlaybackService : MediaLibraryService() {
                 }
                 ACTION_REORDER_QUEUE -> player?.let { QueueShuffle.reorderFromCommand(it, args) }
                 ACTION_QUEUE_DRAG -> {
-                    if (args.getBoolean(EXTRA_QUEUE_DRAG_ACTIVE, false)) {
+                    val active = args.getBoolean(EXTRA_QUEUE_DRAG_ACTIVE, false)
+                    if (active) {
+                        queueDragActive = true
+                        queueDragDirty = false
                         partySync?.beginQueueDrag()
                     } else {
+                        val changed = queueDragDirty
+                        queueDragActive = false
+                        queueDragDirty = false
                         partySync?.endQueueDrag()
+                        if (changed) {
+                            player?.let { current ->
+                                if (current.isPlaying) prefetchAround(current)
+                                saveQueueSnapshot(current)
+                                refreshCustomLayouts()
+                                refreshAutoplayIfQueueEmpty()
+                            }
+                        }
                     }
                 }
                 ACTION_TOGGLE_FAVORITE -> session.player.currentMediaItem?.mediaId?.let {
@@ -7338,7 +7409,24 @@ class PlaybackService : MediaLibraryService() {
                             if (cached != null) {
                                 resolved.add(cached.toMediaItem())
                             } else {
-                                resolved.add(Song(videoId = videoId, title = item.mediaMetadata.title?.toString() ?: "Track", artist = item.mediaMetadata.artist?.toString() ?: "Artist", thumbnailUrl = null).toMediaItem())
+                                // Keep the complete Media3 metadata when the
+                                // cache has no Song record. This branch is
+                                // used while restoring/re-resolving an item;
+                                // rebuilding a bare Song here discarded the
+                                // albumId/artistId extras, making the player
+                                // credits render but silently non-clickable.
+                                val original = item.toSong()
+                                resolved.add(
+                                    original.copy(
+                                        videoId = videoId,
+                                        title = original.title.ifBlank {
+                                            item.mediaMetadata.title?.toString() ?: "Track"
+                                        },
+                                        artist = original.artist.ifBlank {
+                                            item.mediaMetadata.artist?.toString() ?: "Artist"
+                                        },
+                                    ).toMediaItem(),
+                                )
                             }
                         } else {
                             resolved.add(item.buildUpon().setUri(uri).build())

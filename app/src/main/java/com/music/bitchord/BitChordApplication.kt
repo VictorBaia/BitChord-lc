@@ -1,6 +1,8 @@
 package com.music.bitchord
 
 import android.app.Application
+import android.os.Process
+import android.os.SystemClock
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import coil3.ImageLoader
@@ -12,6 +14,7 @@ import coil3.memory.MemoryCache
 import coil3.request.crossfade
 import com.music.bitchord.auth.AuthStore
 import com.music.bitchord.data.canvas.CanvasCache
+import com.music.bitchord.data.cache.ImageCacheBudget
 import com.music.bitchord.data.smb.SmbCoverFetcher
 import com.music.bitchord.data.webdav.WebDavCoilAuth
 import com.music.bitchord.data.canvas.SpotifyToken
@@ -23,12 +26,14 @@ import com.music.bitchord.data.innertube.InnerTubeXResolver
 import com.music.bitchord.data.listentogether.ListenTogether
 import com.music.bitchord.data.navidrome.NavidromeStore
 import com.music.bitchord.data.navidrome.NavidromeCoverFetcher
+import com.music.bitchord.data.navidrome.NavidromeArtworkCache
 import com.music.bitchord.data.scrobbling.LastFM
 import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.data.settings.SearchHistory
 import com.music.bitchord.data.sources.SourceRegistry
 import com.music.bitchord.data.stats.ArtistFacts
 import com.music.bitchord.data.stats.ListeningStats
+import com.music.bitchord.data.diagnostics.CrashReporter
 import com.music.bitchord.download.Downloads
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -40,6 +45,8 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
     @OptIn(UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
+        val startupStartedAt = SystemClock.elapsedRealtime()
+        CrashReporter.init(this)
         // PlaybackService shares this process, so seeding the cookie here means
         // stream resolution is authenticated from the first play onwards.
         authStore = AuthStore(this)
@@ -55,15 +62,16 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
         // threads racing to create it. Optional work is allowed to finish
         // after the first Activity frame.
         val navidromeConfigured = NavidromeStore.config.value.isConfigured
-        val backgroundInit = thread(name = "startup-init") {
-            SourceRegistry.init(this)
-            if (!navidromeConfigured) InnerTubeXResolver.init(this)
-            // Its own directory: canvas clips are looping video, not audio, and
-            // belong in a cache AudioCache's own limit and eviction policy were
-            // never sized for. See CanvasCache's doc for why this one exists at
-            // all — it is the fix for canvas clips re-fetching the same few
-            // seconds of video from the network on every loop.
-            CanvasCache.init(this)
+        if (!navidromeConfigured) {
+            thread(name = "source-init") {
+                val startedAt = SystemClock.elapsedRealtime()
+                Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+                runCatching {
+                    SourceRegistry.init(this)
+                    InnerTubeXResolver.init(this)
+                }.onFailure { CrashReporter.recordNonFatal("startup_sources", it) }
+                CrashReporter.note("startup_source_init_ms=${SystemClock.elapsedRealtime() - startedAt}")
+            }
         }
         // Migration-safe: an old single cookie becomes the first encrypted
         // session, while newer installs restore the profile the listener chose.
@@ -87,6 +95,29 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
             CoroutineScope(Dispatchers.IO).launch { Innertube.ensureSessionScope() }
         }
         AppSettings.init(this, authStore)
+        val versionUpdated = AppSettings.consumeVersionUpdate(BuildConfig.VERSION_CODE)
+        // Opening Media3 caches scans their indices and directories. With a
+        // substantial playback/artwork library that can take hundreds of
+        // milliseconds, so none of it belongs before the Activity's first
+        // frame. DataSource creation waits for audio initialization on its own
+        // loader thread if playback is restored unusually quickly.
+        thread(name = "media-cache-init") {
+            val startedAt = SystemClock.elapsedRealtime()
+            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+            runCatching {
+                AudioCache.init(this)
+                if (versionUpdated) AudioCache.clear()
+            }.onFailure { CrashReporter.recordNonFatal("startup_audio_cache", it) }
+            runCatching { CanvasCache.init(this) }
+                .onFailure { CrashReporter.recordNonFatal("startup_canvas_cache", it) }
+            // Artwork can already read/fill its cache through its lazy
+            // directory path. Index/trim it only after playback-critical
+            // caches are ready, avoiding an extra directory walk between
+            // queue restoration and the first audible frame.
+            runCatching { NavidromeArtworkCache.init(this) }
+                .onFailure { CrashReporter.recordNonFatal("startup_artwork_cache", it) }
+            CrashReporter.note("startup_media_cache_init_ms=${SystemClock.elapsedRealtime() - startedAt}")
+        }
         // Restores a party this device is still a member of, so a process death
         // mid-session is something the rest of the party never sees. The socket
         // and the clock offset are not restored — both are re-established on
@@ -108,9 +139,6 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
         ListeningStats.init(this)
         // After AppSettings, whose switch decides whether half of it runs.
         ArtistFacts.init(this)
-        // One cache directory can only be opened once per process, and
-        // PlaybackService shares this one — so it's opened here, not there.
-        AudioCache.init(this)
         // The offscreen WebView that mints a Spotify access token from the
         // listener's own session cookie needs a Context, and nothing in the
         // suspend call chain that reaches it (a track's canvas lookup) has
@@ -118,20 +146,13 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
         if (!navidromeConfigured) {
             SpotifyToken.init(this)
         }
-        // A sideloaded update is just a new APK over the old one, so app data —
-        // including whatever the old build left in these caches — survives it
-        // untouched. Wipe both on the first launch of a higher versionCode so a
-        // format or key change between builds can't serve stale or mismatched
-        // bytes from a cache the new code didn't write.
-        if (AppSettings.consumeVersionUpdate(BuildConfig.VERSION_CODE)) {
-            AudioCache.clear()
-            SingletonImageLoader.get(this).let { loader ->
-                loader.memoryCache?.clear()
-                loader.diskCache?.clear()
-            }
-        }
+        // Audio's indexed byte ranges are implementation-specific and are
+        // invalidated on update. Artwork is content-addressed by server, cover
+        // id and size, so retaining it is safe and prevents an APK update from
+        // downloading the whole visible library again.
         // Initialize LastFM with saved settings if available
         initLastfm()
+        CrashReporter.note("startup_application_on_create_ms=${SystemClock.elapsedRealtime() - startupStartedAt}")
         // Do not hold Application.onCreate open for optional source/cache work.
         // The first Activity frame must not wait for encrypted source storage,
         // InnerTube setup, or Canvas cache creation.
@@ -168,7 +189,7 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
             .diskCache {
                 DiskCache.Builder()
                     .directory(cacheDir.resolve("image_cache"))
-                    .maxSizeBytes(100L * 1024 * 1024)
+                    .maxSizeBytes(ImageCacheBudget.COIL_BYTES)
                     .build()
             }
             // Covers arriving with a hard cut read as the list flickering as

@@ -388,15 +388,20 @@ internal fun LandscapeCredits(
 ) {
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
         Crossfade(
-            targetState = song.title to song.artist,
+            targetState = listOf(
+                song.title,
+                song.artist,
+                song.albumId.orEmpty(),
+                song.artistId.orEmpty(),
+            ),
             animationSpec = tween(durationMillis = 300),
             modifier = Modifier.weight(1f),
             label = "landscapeCredits",
-        ) {
+        ) { credits ->
             Column {
                 var titleOverflowing by remember { mutableStateOf(false) }
                 MarqueeText(
-                    text = song.title,
+                    text = credits[0],
                     style = MaterialTheme.typography.titleLarge,
                     color = Color.White,
                     onOverflowChange = { titleOverflowing = it },
@@ -405,17 +410,17 @@ internal fun LandscapeCredits(
                     } else {
                         null
                     },
-                    modifier = Modifier.opensPage(song.albumId, onOpenAlbum),
+                    modifier = Modifier.opensPage(credits[2].ifBlank { null }, onOpenAlbum),
                 )
                 Spacer(Modifier.height(2.dp))
                 MarqueeText(
-                    text = song.artist,
+                    text = credits[1],
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.W500),
                     color = Color.White.copy(alpha = 0.55f),
                     // A title that's also scrolling gets to go first — starting
                     // together reads as clutter, so the artist waits a beat.
                     startDelayMillis = if (titleOverflowing) MARQUEE_ARTIST_STAGGER_MS else 0L,
-                    modifier = Modifier.opensPage(song.artistId, onOpenArtist),
+                    modifier = Modifier.opensPage(credits[3].ifBlank { null }, onOpenArtist),
                 )
             }
         }

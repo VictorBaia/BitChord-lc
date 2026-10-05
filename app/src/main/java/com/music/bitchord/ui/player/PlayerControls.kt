@@ -1122,7 +1122,7 @@ private fun BottomGlyph(
 
 /** A credit that links somewhere, when [browseId] is known. */
 internal fun Modifier.opensPage(browseId: String?, onOpen: (String) -> Unit): Modifier =
-    if (browseId == null) {
+    if (browseId.isNullOrBlank()) {
         this
     } else {
         clip(RoundedCornerShape(6.dp)).clickable { onOpen(browseId) }

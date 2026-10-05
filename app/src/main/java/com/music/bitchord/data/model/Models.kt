@@ -22,6 +22,9 @@ data class Song(
     val albumId: String? = null,
     /** Names the album page header, which [albumId] alone can't. */
     val albumName: String? = null,
+    /** Spotify track URI/URL carried by catalogued files when available. */
+    val spotifyUri: String? = null,
+    val isrc: String? = null,
     /** A music-video upload rather than the catalogue track. */
     val isVideo: Boolean = false,
     /**
@@ -109,6 +112,8 @@ data class Song(
         artistId: String? = null,
         albumId: String? = null,
         albumName: String? = null,
+        spotifyUri: String? = null,
+        isrc: String? = null,
         isVideo: Boolean = false,
         isVideoOrigin: Boolean = isVideo,
         setVideoId: String? = null,
@@ -133,6 +138,8 @@ data class Song(
         artistId = artistId,
         albumId = albumId,
         albumName = albumName,
+        spotifyUri = spotifyUri,
+        isrc = isrc,
         isVideo = isVideo,
         isVideoOrigin = isVideoOrigin,
         setVideoId = setVideoId,
@@ -383,6 +390,8 @@ data class HomeShelf(
     val subtitle: String = "",
     val moreBrowseId: String? = null,
     val moreParams: String? = null,
+    /** Identifies the native Recents shelf without relying on translated display text. */
+    val isRecents: Boolean = false,
 )
 
 /** A page of the Home feed, plus the token for the next one — null once exhausted. */

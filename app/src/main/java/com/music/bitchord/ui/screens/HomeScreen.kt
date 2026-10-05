@@ -216,7 +216,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.itemsIndexedShelves(
     shelves.forEachIndexed { index, shelf ->
         item(key = shelf.title + index) {
             val openItem: (ShelfItem) -> Unit = { item -> onItemClick(item, shelf.title) }
-            if (index == 0 && shelf.title.equals(RECENTS_TITLE, ignoreCase = true)) {
+            if (index == 0 && (shelf.isRecents || shelf.title.equals(RECENTS_TITLE, ignoreCase = true))) {
                 RecentShelf(
                     shelf = shelf,
                     onItemClick = openItem,

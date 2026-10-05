@@ -67,6 +67,8 @@
     <string name="songs">Músicas</string>
     <string name="artists">Artistas</string>
     <string name="albums">Álbuns</string>
+    <string name="eps">EPs</string>
+    <string name="singles">Singles</string>
     <string name="no_album_metadata">Nenhuma dessas faixas indica a qual álbum pertence.</string>
     <string name="search_empty">Pesquise em sua biblioteca.</string>
     <string name="recent_searches">Pesquisas recentes</string>
@@ -171,6 +173,10 @@
     <string name="replay_subtitle">Suas músicas, artistas, álbuns e gêneros mais ouvidos</string>
     <string name="work_out_genres">Calcular gêneros</string>
     <string name="export_data">Exportar dados</string>
+    <string name="export_crash_report">Exportar relatório de falhas</string>
+    <string name="export_crash_report_subtitle">Crashes, fechamentos inesperados, uso de recursos e diagnósticos recentes do player</string>
+    <string name="export_crash_report_succeeded">Relatório de falhas exportado</string>
+    <string name="export_crash_report_failed">Não foi possível exportar o relatório: %1$s</string>
     <string name="export_data_subtitle">Configurações e histórico de audição, em um arquivo JSON</string>
     <string name="import_data">Importar dados</string>
     <string name="import_data_subtitle">Substitui as configurações e o histórico deste dispositivo</string>
@@ -235,10 +241,14 @@
     <string name="synced_lyrics_subtitle">Destaca as palavras no player conforme são cantadas</string>
     <string name="lyrics_sources">Fontes de letras</string>
     <string name="song_cache_limit">Limite de cache de músicas</string>
+    <string name="image_cache_limit">Limite do cache de imagens</string>
+    <string name="image_cache_limit_subtitle">Mantém capas de álbuns, artistas e artes animadas disponíveis offline</string>
     <string name="clear_song_cache">Limpar cache de músicas</string>
     <string name="clear_song_cache_subtitle">Libera espaço usado pelo áudio baixado</string>
+    <string name="clear_song_cache_confirmation">Limpar todas as músicas em cache? Elas serão transmitidas ou baixadas novamente quando necessário.</string>
     <string name="clear_image_cache">Limpar cache de imagens</string>
     <string name="clear_image_cache_subtitle">Libera espaço usado pelas capas de álbum</string>
+    <string name="clear_image_cache_confirmation">Limpar todas as imagens em cache? Elas serão baixadas novamente quando necessário.</string>
     <string name="play_next_on_swipe">Tocar a seguir ao deslizar</string>
     <string name="dont_repeat_songs">Não repetir músicas na sessão atual</string>
     <string name="stop_music_on_close">Parar música ao fechar pelos recentes</string>
@@ -470,6 +480,7 @@
     <string name="search_this_list">Pesquisar nesta lista</string>
     <string name="second_button">Segundo botão</string>
     <string name="share">Compartilhar</string>
+    <string name="open_in_spotify">Ver no Spotify</string>
     <string name="sharing_as">Compartilhando como @%1$s</string>
     <string name="sharing_listens">Compartilhando o que você ouve</string>
     <string name="show_what_playing">Mostrar o que estou ouvindo</string>
@@ -1360,4 +1371,17 @@
     <string name="navidrome_profile_photo">Foto do usuário</string>
     <string name="navidrome_profile_photo_set">Foto selecionada</string>
     <string name="navidrome_profile_photo_unset">Escolher uma foto</string>
+    <string name="navidrome_force_sync">Forçar sincronização completa</string>
+    <string name="navidrome_syncing">Sincronizando…</string>
+    <string name="navidrome_sync_completed">Sincronização completa concluída</string>
+    <string name="navidrome_sync_failed">A sincronização completa falhou</string>
+    <string name="streaming">Streaming</string>
+    <string name="force_music_streaming">Forçar streaming de músicas</string>
+    <string name="force_music_streaming_description">Faça streaming, ignorando arquivos em cache/download.</string>
+    <string name="manage_cached_music">Gerenciar arquivos em cache</string>
+    <string name="manage_cached_music_description">Veja ou remova músicas mantidas para reprodução posterior</string>
+    <string name="manage_downloads">Gerenciar downloads</string>
+    <string name="manage_downloads_description">Veja ou remova músicas baixadas por você</string>
+    <string name="no_cached_music">Nenhuma música está em cache</string>
+    <string name="no_downloaded_music">Nenhuma música foi baixada</string>
 </resources>

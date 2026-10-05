@@ -566,6 +566,9 @@ object AppSettings {
     /** Disk budget for cached audio. [AudioCache][com.music.bitchord.playback.AudioCache] evicts past it. */
     val audioCacheLimitBytes = MutableStateFlow(DEFAULT_CACHE_LIMIT_BYTES)
 
+    /** Disk budget applied to static artwork and animated artwork caches. */
+    val imageCacheLimitBytes = MutableStateFlow(DEFAULT_IMAGE_CACHE_LIMIT_BYTES)
+
     // ── Replay ──────────────────────────────────────────────────────────────
 
     /**
@@ -894,6 +897,8 @@ object AppSettings {
         com.music.bitchord.data.lyrics.PaxSenix.setApiKey(paxSenixApiKey.value)
         audioCacheLimitBytes.value = prefs.getLong(KEY_CACHE_LIMIT, DEFAULT_CACHE_LIMIT_BYTES)
             .coerceIn(DEFAULT_CACHE_LIMIT_BYTES, MAX_CACHE_LIMIT_BYTES)
+        imageCacheLimitBytes.value = prefs.getLong(KEY_IMAGE_CACHE_LIMIT, DEFAULT_IMAGE_CACHE_LIMIT_BYTES)
+            .coerceIn(MIN_IMAGE_CACHE_LIMIT_BYTES, MAX_IMAGE_CACHE_LIMIT_BYTES)
         lastfmEnabled.value = prefs.getBoolean(KEY_LASTFM_ENABLED, false)
         lastfmUsername.value = prefs.getString(KEY_LASTFM_USERNAME, "").orEmpty()
         lastfmSessionKey.value = prefs.getString(KEY_LASTFM_SESSION_KEY, "").orEmpty()
@@ -1449,6 +1454,12 @@ object AppSettings {
         prefs.edit().putLong(KEY_CACHE_LIMIT, clamped).apply()
     }
 
+    fun setImageCacheLimitBytes(value: Long) {
+        val clamped = value.coerceIn(MIN_IMAGE_CACHE_LIMIT_BYTES, MAX_IMAGE_CACHE_LIMIT_BYTES)
+        imageCacheLimitBytes.value = clamped
+        prefs.edit().putLong(KEY_IMAGE_CACHE_LIMIT, clamped).apply()
+    }
+
     fun setLastfmEnabled(value: Boolean) {
         lastfmEnabled.value = value
         prefs.edit().putBoolean(KEY_LASTFM_ENABLED, value).apply()
@@ -1913,7 +1924,10 @@ object AppSettings {
     )
 
     const val DEFAULT_CACHE_LIMIT_BYTES = 512L * 1024 * 1024
-    const val MAX_CACHE_LIMIT_BYTES = 10L * 1024 * 1024 * 1024
+    const val MAX_CACHE_LIMIT_BYTES = 8L * 1024 * 1024 * 1024
+    const val MIN_IMAGE_CACHE_LIMIT_BYTES = 2L * 1024 * 1024 * 1024
+    const val DEFAULT_IMAGE_CACHE_LIMIT_BYTES = 2L * 1024 * 1024 * 1024
+    const val MAX_IMAGE_CACHE_LIMIT_BYTES = 12L * 1024 * 1024 * 1024
 
     const val MIN_LYRICS_OFFSET_MS = -5_000
     const val MAX_LYRICS_OFFSET_MS = 5_000
@@ -1958,6 +1972,7 @@ object AppSettings {
     private const val KEY_REPEAT_MODE = "repeat_mode"
     private const val KEY_NERD_STATS = "show_nerd_stats"
     private const val KEY_CACHE_LIMIT = "audio_cache_limit_bytes"
+    private const val KEY_IMAGE_CACHE_LIMIT = "image_cache_limit_bytes"
     private const val KEY_REDUCE_ANIMATION = "reduce_animation"
     private const val KEY_HIGH_PERFORMANCE_MODE = "high_performance_mode"
     private const val KEY_PERFORMANCE_REFRESH_RATE = "performance_refresh_rate"

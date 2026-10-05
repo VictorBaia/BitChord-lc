@@ -5,9 +5,16 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.cache.CacheDataSource
-import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
+import com.music.bitchord.data.cache.ImageCacheBudget
+import com.music.bitchord.data.settings.AppSettings
+import com.music.bitchord.playback.DynamicLruCacheEvictor
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.io.File
+import java.util.concurrent.CountDownLatch
 
 /**
  * Disk cache for canvas clips — the looping video some releases publish
@@ -33,22 +40,55 @@ import java.io.File
 @UnstableApi
 object CanvasCache {
 
-    /**
-     * Small on purpose — a clip is a few seconds of video, not a song, and
-     * this only needs to outlive one player screen's worth of looping, not
-     * a library. [SimpleCache]'s own evictor reclaims the rest.
-     */
-    private const val CACHE_LIMIT_BYTES = 150L * 1024 * 1024
-
     private lateinit var cache: SimpleCache
+    private val evictor = DynamicLruCacheEvictor(
+        maxBytes = ImageCacheBudget.animatedArtworkBytes(AppSettings.DEFAULT_IMAGE_CACHE_LIMIT_BYTES),
+        headBytes = 0L,
+        headBudgetBytes = 0L,
+    )
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val initialized = CountDownLatch(1)
+    @Volatile private var initializationFailure: Throwable? = null
 
     /** Opened once per process, alongside [com.music.bitchord.playback.AudioCache.init]. */
     fun init(context: Context) {
-        cache = SimpleCache(
-            File(context.cacheDir, "canvas"),
-            LeastRecentlyUsedCacheEvictor(CACHE_LIMIT_BYTES),
-            StandaloneDatabaseProvider(context),
-        )
+        try {
+            val legacyDirectory = File(context.cacheDir, "canvas")
+            val persistentDirectory = File(context.noBackupFilesDir, "canvas")
+            // cacheDir is disposable under Android storage pressure. Move an
+            // existing library atomically on the same filesystem so an update does
+            // not re-download animated artwork that is already present.
+            val cacheDirectory = when {
+                persistentDirectory.exists() -> persistentDirectory
+                legacyDirectory.exists() && legacyDirectory.renameTo(persistentDirectory) -> persistentDirectory
+                legacyDirectory.exists() -> legacyDirectory
+                else -> persistentDirectory.apply { mkdirs() }
+            }
+            cache = SimpleCache(
+                cacheDirectory,
+                evictor.apply {
+                    maxBytes = ImageCacheBudget.animatedArtworkBytes(AppSettings.imageCacheLimitBytes.value)
+                },
+                StandaloneDatabaseProvider(context),
+            )
+            scope.launch {
+                AppSettings.imageCacheLimitBytes.collect { limit ->
+                    evictor.maxBytes = ImageCacheBudget.animatedArtworkBytes(limit)
+                    evictor.applyNow(cache)
+                }
+            }
+        } catch (error: Throwable) {
+            initializationFailure = error
+            throw error
+        } finally {
+            initialized.countDown()
+        }
+    }
+
+    private fun awaitCache(): SimpleCache {
+        initialized.await()
+        initializationFailure?.let { throw IllegalStateException("Canvas cache initialization failed", it) }
+        return cache
     }
 
     /**
@@ -60,7 +100,14 @@ object CanvasCache {
      */
     fun dataSourceFactory(upstream: DataSource.Factory): DataSource.Factory =
         CacheDataSource.Factory()
-            .setCache(cache)
+            .setCache(awaitCache())
             .setUpstreamDataSourceFactory(upstream)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+
+    fun clear() {
+        scope.launch {
+            val readyCache = awaitCache()
+            readyCache.keys.toList().forEach { readyCache.removeResource(it) }
+        }
+    }
 }

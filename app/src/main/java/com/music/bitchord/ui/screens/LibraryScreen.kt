@@ -31,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -433,7 +434,7 @@ internal fun LibraryGridShelf(
             horizontalArrangement = Arrangement.spacedBy(LIBRARY_GRID_SPACING),
         ) {
             leadingCard?.let { card -> item(key = "leading") { card() } }
-            items(visibleItems) { item ->
+            items(visibleItems, key = { it.browseId ?: "${it.title}:${it.subtitle}" }) { item ->
                 ShelfCard(
                     item = item,
                     onClick = { onItemClick(item) },
@@ -469,10 +470,15 @@ fun LibraryGridPage(
     // Pinning wins over the default order, but an explicit sort is a stronger,
     // more deliberate signal than a pin and is left to reorder the whole grid,
     // pinned cards included.
-    val sortedShelf = shelf.pinnedFirst(pinnedPlaylists).sortedForLibrary(librarySort)
-    val visibleItems = sortedShelf.items.filter {
-        query.isBlank() || it.title.contains(query.trim(), ignoreCase = true) ||
-            it.subtitle.contains(query.trim(), ignoreCase = true)
+    val sortedShelf = remember(shelf, pinnedPlaylists, librarySort) {
+        shelf.pinnedFirst(pinnedPlaylists).sortedForLibrary(librarySort)
+    }
+    val visibleItems = remember(sortedShelf.items, query) {
+        val term = query.trim()
+        sortedShelf.items.filter {
+            term.isBlank() || it.title.contains(term, ignoreCase = true) ||
+                it.subtitle.contains(term, ignoreCase = true)
+        }
     }
     BoxWithConstraints(modifier.fillMaxSize()) {
         val grid = libraryGrid(maxWidth - PAGE_GUTTER * 2)

@@ -200,6 +200,11 @@ object TrackLog {
             "\n"
     }
 
+    /** Process-wide tail used by the crash reporter when no track can be selected. */
+    fun recentDump(): String = synchronized(lines) {
+        lines.joinToString("\n") { "${CLOCK.format(Date(it.at))} ${it.level} [${it.track ?: "app"}] ${it.text}" }
+    }
+
     // ── The part that isn't the log ─────────────────────────────────────────
 
     /**

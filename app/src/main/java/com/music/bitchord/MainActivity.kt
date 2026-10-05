@@ -119,6 +119,7 @@ import com.music.bitchord.data.listentogether.JamInviteLink
 import com.music.bitchord.data.listentogether.ListenTogether
 import com.music.bitchord.data.NerdStats
 import com.music.bitchord.data.TrackLog
+import com.music.bitchord.data.diagnostics.CrashReporter
 import com.music.bitchord.data.innertube.InnertubeParser
 import com.music.bitchord.data.model.BrowseType
 import com.music.bitchord.data.model.Account
@@ -138,6 +139,8 @@ import com.music.bitchord.data.model.durationMillis
 import com.music.bitchord.data.scrobbling.LastFM
 import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.data.navidrome.NavidromeStore
+import com.music.bitchord.data.navidrome.NavidromeRepository
+import com.music.bitchord.data.navidrome.NavidromeIds
 import com.music.bitchord.data.settings.LibrarySort
 import com.music.bitchord.data.settings.ThemeMode
 import com.music.bitchord.ui.components.AccountProfileSelector
@@ -446,6 +449,7 @@ private fun BitChordApp(
     var webSession by remember { mutableStateOf<WebSessionMode?>(null) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showNavidromeSettings by remember { mutableStateOf(false) }
+    var downloadsOpenedFromNavidromeSettings by rememberSaveable { mutableStateOf(false) }
     val navidromeConfigured by NavidromeStore.config.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) {
         if (!navidromeConfigured.isConfigured) {
@@ -687,7 +691,10 @@ private fun BitChordApp(
     // selected. A pushed album/artist page (from the player, search, etc.)
     // should surface above it rather than being hidden behind it.
     LaunchedEffect(detail) { if (detail != null) showSettings = false }
-    LaunchedEffect(detail?.browseId) { detailActiveShelf = null }
+    LaunchedEffect(detail?.browseId) {
+        detailActiveShelf = null
+        if (detail?.browseId != "local:downloads") downloadsOpenedFromNavidromeSettings = false
+    }
     LaunchedEffect(showSettings) {
         if (!showSettings) {
             showAccountScrobbling = false
@@ -904,6 +911,7 @@ private fun BitChordApp(
     // something is exactly when it needs re-fetching.
     LaunchedEffect(currentFeed) {
         if (currentFeed == MainViewModel.Feed.HOME) viewModel.onHomeShown()
+        if (currentFeed == MainViewModel.Feed.EXPLORE) viewModel.onExploreShown()
         // Likewise for Library: a playlist created or a song liked since it
         // was last fetched is a change to exactly this page.
         if (currentFeed == MainViewModel.Feed.LIBRARY) viewModel.onLibraryShown()
@@ -1977,17 +1985,23 @@ private fun BitChordApp(
         linksLoading = false
         if (!playerShowing) return@LaunchedEffect
         val current = player.song ?: return@LaunchedEffect
-        if (current.albumId != null && current.artistId != null) return@LaunchedEffect
+        if (!current.albumId.isNullOrBlank() && !current.artistId.isNullOrBlank()) {
+            return@LaunchedEffect
+        }
         linksLoading = true
-        links = YtMusicRepository.trackLinks(current.videoId).getOrNull()
+        links = if (NavidromeIds.rawTrack(current.videoId) != null) {
+            NavidromeRepository.track(current.videoId).getOrNull()
+        } else {
+            YtMusicRepository.trackLinks(current.videoId).getOrNull()
+        }
         linksLoading = false
     }
     val playerSong = player.song?.let { current ->
         val extra = links?.takeIf { it.videoId == current.videoId } ?: return@let current
         current.copy(
-            artistId = current.artistId ?: extra.artistId,
-            albumId = current.albumId ?: extra.albumId,
-            albumName = current.albumName ?: extra.albumName,
+            artistId = current.artistId?.takeUnless(String::isBlank) ?: extra.artistId,
+            albumId = current.albumId?.takeUnless(String::isBlank) ?: extra.albumId,
+            albumName = current.albumName?.takeUnless(String::isBlank) ?: extra.albumName,
         )
     }
     // The three-dot menu snapshots the track into songActions when it's opened,
@@ -2003,11 +2017,20 @@ private fun BitChordApp(
     // The player's whole parameter list, kept apart from the sheet that
     // mounts it so the sheet's own setup reads on its own.
     val nowPlaying: @Composable (Song) -> Unit = { song ->
-        val effectiveSong = optimisticVersionSong?.takeIf {
+        val selectedVersion = optimisticVersionSong?.takeIf {
             it.videoId == convertedAudioId || it.videoId == convertedVideoId || it.videoId == keepVideoId ||
             it.videoId == YtMusicRepository.cachedAudioVersion(song.videoId)?.videoId ||
             it.videoId == YtMusicRepository.cachedVideoVersion(song.videoId)?.videoId
         } ?: song
+        // A quality/version swap changes the playable id, not the page this
+        // recording belongs to. Some replacement rows do not carry browse ids;
+        // letting them replace the enriched queue row made the credits lose
+        // their click targets only while that rendition was active.
+        val effectiveSong = selectedVersion.copy(
+            artistId = selectedVersion.artistId?.takeUnless(String::isBlank) ?: song.artistId,
+            albumId = selectedVersion.albumId?.takeUnless(String::isBlank) ?: song.albumId,
+            albumName = selectedVersion.albumName?.takeUnless(String::isBlank) ?: song.albumName,
+        )
         val displayedSong = activeRadioSeed
             ?.takeIf { (videoId, _) -> effectiveSong.radioName == null && videoId == effectiveSong.videoId }
             ?.let { (videoId, name) ->
@@ -2058,10 +2081,10 @@ private fun BitChordApp(
                     // previous song's length.
                     val duration = player.duration
                     if (duration > 0) {
-                        player.seekTo(
-                            (fraction * duration).toLong()
-                                .coerceIn(0L, (duration - SEEK_END_GUARD_MS).coerceAtLeast(0L)),
-                        )
+                        val target = (fraction * duration).toLong()
+                            .coerceIn(0L, (duration - SEEK_END_GUARD_MS).coerceAtLeast(0L))
+                        CrashReporter.note("player_seek source=scrubber media=${player.currentMediaItem?.mediaId} targetMs=$target")
+                        player.seekTo(target)
                     }
                 }
             },
@@ -2080,13 +2103,13 @@ private fun BitChordApp(
                     // the next one: tapping the last line of a song
                     // skipped it.
                     val duration = player.duration
-                    player.seekTo(
-                        if (duration > 0) {
+                    val clampedTarget = if (duration > 0) {
                             target.coerceIn(0L, (duration - SEEK_END_GUARD_MS).coerceAtLeast(0L))
                         } else {
                             target.coerceAtLeast(0L)
-                        },
-                    )
+                        }
+                    CrashReporter.note("player_seek source=lyrics media=${player.currentMediaItem?.mediaId} targetMs=$clampedTarget")
+                    player.seekTo(clampedTarget)
                 }
             },
             queue = player.queue,
@@ -2141,7 +2164,6 @@ private fun BitChordApp(
                 songActions = song
             },
             onOpenAlbum = { id ->
-                showNowPlaying = false
                 viewModel.openDetail(
                     id,
                     song.albumName ?: song.title,
@@ -2149,9 +2171,9 @@ private fun BitChordApp(
                     song.thumbnailUrl,
                     BrowseType.ALBUM,
                 )
+                showNowPlaying = false
             },
             onOpenArtist = { id ->
-                showNowPlaying = false
                 // No artwork: this track's cover isn't the artist's
                 // picture, and the page fills its own in once loaded.
                 viewModel.openDetail(
@@ -2161,6 +2183,7 @@ private fun BitChordApp(
                     null,
                     BrowseType.ARTIST,
                 )
+                showNowPlaying = false
             },
             onOpenPlaybackSource = openSource@{
                 val sourceType = displayedSong.playbackSourceType ?: PlaybackSourceType.QUEUE
@@ -2258,7 +2281,15 @@ private fun BitChordApp(
         BackHandler(
             enabled = detail != null && !showSettings && !showAccountScrobbling && !showSources && !showListenTogether &&
                 !showEqualizer && !showReplay,
-        ) { viewModel.closeDetail() }
+        ) {
+            val returnToSettings = downloadsOpenedFromNavidromeSettings && detail?.browseId == "local:downloads"
+            viewModel.closeDetail()
+            if (returnToSettings) {
+                downloadsOpenedFromNavidromeSettings = false
+                showSettings = true
+                showNavidromeSettings = true
+            }
+        }
         BackHandler(enabled = selectedMoodGenre != null && detail == null && !showSettings && !showReplay) {
             viewModel.closeMoodGenre()
         }
@@ -2505,7 +2536,22 @@ private fun BitChordApp(
                             contentPadding = listPadding,
                         )
                     } else if (key == "navidrome_settings") {
-                        NavidromeSettingsScreen(contentPadding = listPadding)
+                        NavidromeSettingsScreen(
+                            contentPadding = listPadding,
+                            synchronizationStatus = viewModel.navidromeSyncStatus.collectAsStateWithLifecycle().value,
+                            onForceSynchronization = viewModel::startNavidromeFullSync,
+                            onSynchronizationResultConsumed = viewModel::consumeNavidromeSyncResult,
+                            onManageDownloads = {
+                                downloadsOpenedFromNavidromeSettings = true
+                                showNavidromeSettings = false
+                                showSettings = false
+                                viewModel.openDetail(
+                                    browseId = "local:downloads",
+                                    title = context.getString(R.string.downloads),
+                                    subtitle = context.getString(R.string.downloaded_songs),
+                                )
+                            },
+                        )
                     } else if (key == "sources") {
                         SourcesScreen(
                             contentPadding = listPadding,
@@ -2762,7 +2808,7 @@ private fun BitChordApp(
                             listState = homeListState,
                             title = stringResource(R.string.listen_now),
                             signedIn = signedIn,
-                            onSignIn = { webSession = WebSessionMode.SIGN_IN },
+                            onSignIn = null,
                             onItemClick = { item, shelfTitle ->
                                 val song = shelfSong(item)
                                 when {
@@ -3078,7 +3124,16 @@ private fun BitChordApp(
                         showSettings -> ({ showSettings = false })
                         showReplay -> ({ showReplay = false })
                         detailActiveShelf != null -> ({ detailActiveShelf = null })
-                        detail != null -> ({ viewModel.closeDetail(); Unit })
+                        detail != null -> ({
+                            val returnToSettings = downloadsOpenedFromNavidromeSettings &&
+                                detail?.browseId == "local:downloads"
+                            viewModel.closeDetail()
+                            if (returnToSettings) {
+                                downloadsOpenedFromNavidromeSettings = false
+                                showSettings = true
+                                showNavidromeSettings = true
+                            }
+                        })
                         selectedMoodGenre != null -> ({ viewModel.closeMoodGenre(); Unit })
                         else -> null
                     },
@@ -3444,13 +3499,21 @@ private fun BitChordApp(
             // read off the player's own visibility any more, because on a
             // tablet the player is visible whatever the menu was opened from.
             val fromPlayer = menuFromPlayer
-            val share: () -> Unit = {
-                val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_TEXT, "https://music.youtube.com/watch?v=${song.videoId}")
-                }
-                context.startActivity(Intent.createChooser(sendIntent, song.title))
+            val openSpotify: () -> Unit = {
                 songActions = null
+                scope.launch {
+                    val current = if (NavidromeIds.rawTrack(song.videoId) != null) {
+                        NavidromeRepository.track(song.videoId).getOrNull() ?: song
+                    } else {
+                        song
+                    }
+                    val target = current.spotifyUri?.trim()?.takeIf { it.isNotEmpty() }
+                        ?: current.isrc?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                            "https://open.spotify.com/search/${Uri.encode("isrc:$it")}"
+                        }
+                        ?: "https://open.spotify.com/search/${Uri.encode("${current.artist} ${current.title}")}"
+                    SpotifyLinkLauncher.open(context, target)
+                }
             }
             // Navigating has to take the player down with the sheet, or the
             // page it opens lands behind a still-covering player.
@@ -3648,29 +3711,7 @@ private fun BitChordApp(
                     // idea of the song from the first second, and a wrong
                     // match sounds like a wrong match whether or not anything
                     // announced itself. See [Song.hasYouTubeOriginal].
-                    onRollbackToOriginal = if (fromPlayer &&
-                        song.hasYouTubeOriginal() &&
-                        // Nothing to revert *from*: the listener is hearing a
-                        // file they saved, not a stream anything chose.
-                        song.localUri == null &&
-                        // Already there, and the menu says so with the row
-                        // below instead.
-                        song.videoId !in pinnedToOriginal &&
-                        // And the same for a track that got back here without
-                        // the listener asking: an upgrade that failed to prove
-                        // itself is reverted automatically and pins nothing, so
-                        // this row was being offered for a track already on
-                        // YouTube's own stream, where it does nothing.
-                        !playingYouTubesOwn(song.videoId, controller) &&
-                        controller?.currentMediaItem?.mediaId == song.videoId
-                    ) {
-                        {
-                            controller?.revertToOriginal()
-                            songActions = null
-                        }
-                    } else {
-                        null
-                    },
+                    onRollbackToOriginal = null,
                     // The way back, and for a pinned track the only one: it is
                     // held off the automatic search on purpose, so nothing but
                     // this will ever offer it a better copy again. Also shown
@@ -3679,32 +3720,15 @@ private fun BitChordApp(
                     // due to look at it again — [QualityUpgrade.refuseUpgrades]
                     // takes a broken track off the automatic path for the rest
                     // of the session, and `askByHand` is what clears that.
-                    onUpgradeQuality = if (fromPlayer &&
-                        (
-                            song.videoId in pinnedToOriginal ||
-                                playingYouTubesOwn(song.videoId, controller)
-                            ) &&
-                        // A track playing off a file the listener saved is not
-                        // playing a stream anything could upgrade — the pin on
-                        // it is only waiting for the day it is streamed again.
-                        song.localUri == null &&
-                        controller?.currentMediaItem?.mediaId == song.videoId
-                    ) {
-                        {
-                            controller.upgradeQuality()
-                            songActions = null
-                        }
-                    } else {
-                        null
-                    },
+                    onUpgradeQuality = null,
                     upgradeQualityInProgress = fromPlayer && song.videoId in qualityUpgradesInFlight,
-                    onToggleAudioVersion = onToggleVersion,
+                    onToggleAudioVersion = null,
                     isAudioVersion = menuIsAudioVersion,
                     // Hidden outright when there's no real YouTube id behind
                     // this row to build a link from — SongActionsSheet already
                     // drops it for a local file via `isOffline`, this catches
                     // the rest.
-                    onShare = share.takeIf { song.videoId.isNotBlank() },
+                    onShare = openSpotify.takeIf { song.videoId.isNotBlank() },
                     onCopyLog = if (fromPlayer) {
                         {
                             songActions = null

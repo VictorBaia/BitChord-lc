@@ -779,6 +779,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** In-flight liked-library continuation sync — see [syncLikedMusic]. */
     private var likedSyncJob: Job? = null
+    private var libraryLoadJob: Job? = null
 
     /**
      * Loads the account state behind an opening track menu — the library
@@ -1253,10 +1254,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * showing it a moment out of date.
      */
     private var libraryStale = false
+    private var exploreLoadJob: Job? = null
+    private var moodGenreArtworkJob: Job? = null
+    private var exploreArtworkEnabled = false
 
     /** Call when the library tab becomes visible. */
     fun onLibraryShown() {
         loadPlaylists()
+        if (navidromeActive && _library.value is UiState.Loading) {
+            loadLibrary()
+            return
+        }
         if (!libraryStale) return
         libraryStale = false
         if (_library.value is UiState.Success) refresh(Feed.LIBRARY)
@@ -1267,18 +1275,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         startSuggestPipeline()
         startTypeaheadMediaPipeline()
         loadHome()
-        loadExplore()
         if (_signedIn.value || navidromeActive) {
-            loadLibrary()
-            loadPlaylists()
-            if (_signedIn.value) loadAccount()
+            if (navidromeActive) {
+                // Home is the only visible destination at startup. Seeding
+                // hearts remains automatic, but outside the first-frame burst
+                // of four Home requests and cache restoration.
+                viewModelScope.launch {
+                    delay(STARTUP_BACKGROUND_WARMUP_MS)
+                    primeNavidromeLikes()
+                }
+            } else {
+                loadLibrary()
+                loadPlaylists()
+                loadAccount()
+            }
         }
         viewModelScope.launch {
             NavidromeStore.config.drop(1).collect { config ->
                 if (config.isConfigured) {
                     loadHome()
-                    loadLibrary()
-                    loadExplore()
+                    _library.value = UiState.Loading
+                    _explore.value = UiState.Loading
+                    exploreLoadJob?.cancel()
+                    exploreLoadJob = null
+                    if (exploreArtworkEnabled) loadExplore()
                 }
             }
         }
@@ -1313,6 +1333,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             // A leftover APK only means "Install Now" for the session that
             // downloaded it — see AppUpdateChecker.clearCache.
+            delay(STARTUP_BACKGROUND_WARMUP_MS)
             AppUpdateChecker.clearCache(getApplication())
             AppUpdateChecker.check()
         }
@@ -1374,8 +1395,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     enum class Feed { HOME, EXPLORE, LIBRARY }
 
+    enum class NavidromeSyncStatus { IDLE, RUNNING, SUCCEEDED, FAILED }
+
     private val _refreshing = MutableStateFlow(emptySet<Feed>())
     val refreshing: StateFlow<Set<Feed>> = _refreshing.asStateFlow()
+    private val _navidromeSyncStatus = MutableStateFlow(NavidromeSyncStatus.IDLE)
+    val navidromeSyncStatus: StateFlow<NavidromeSyncStatus> = _navidromeSyncStatus.asStateFlow()
 
     /**
      * Re-fetches [feed] in place. Unlike the `load*` entry points this leaves
@@ -1398,9 +1423,56 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Reloads every Navidrome-backed catalogue after a server-side full scan. */
+    fun refreshNavidromeCatalogue() {
+        if (!navidromeActive) return
+        refresh(Feed.HOME)
+        refresh(Feed.EXPLORE)
+        refresh(Feed.LIBRARY)
+        loadPlaylists()
+    }
+
+    fun startNavidromeFullSync() {
+        if (!navidromeActive || _navidromeSyncStatus.value == NavidromeSyncStatus.RUNNING) return
+        _navidromeSyncStatus.value = NavidromeSyncStatus.RUNNING
+        viewModelScope.launch {
+            NavidromeRepository.startFullScan().fold(
+                onSuccess = {
+                    refreshNavidromeCatalogue()
+                    _navidromeSyncStatus.value = NavidromeSyncStatus.SUCCEEDED
+                },
+                onFailure = { _navidromeSyncStatus.value = NavidromeSyncStatus.FAILED },
+            )
+        }
+    }
+
+    fun consumeNavidromeSyncResult() {
+        if (_navidromeSyncStatus.value != NavidromeSyncStatus.RUNNING) {
+            _navidromeSyncStatus.value = NavidromeSyncStatus.IDLE
+        }
+    }
+
     fun loadExplore() {
+        if (exploreLoadJob?.isActive == true) return
         _explore.value = UiState.Loading
-        viewModelScope.launch { fetchExplore() }
+        exploreLoadJob = viewModelScope.launch {
+            try {
+                fetchExplore()
+            } finally {
+                exploreLoadJob = null
+            }
+        }
+    }
+
+    /** Defers category artwork traffic until the Explore tab is actually used. */
+    fun onExploreShown() {
+        exploreArtworkEnabled = true
+        val sections = (_explore.value as? UiState.Success)?.data
+        if (sections == null) {
+            loadExplore()
+            return
+        }
+        loadMoodGenreArtwork(sections)
     }
 
     private suspend fun fetchExplore() {
@@ -1416,7 +1488,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 onFailure = { UiState.Error(it.friendly()) },
             )
             _explore.value = state
-            (state as? UiState.Success)?.data?.let(::loadMoodGenreArtwork)
+            if (exploreArtworkEnabled) {
+                (state as? UiState.Success)?.data?.let(::loadMoodGenreArtwork)
+            }
             return
         }
         val state = YtMusicRepository.moodAndGenres().fold(
@@ -1430,7 +1504,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             onFailure = { UiState.Error(it.friendly()) },
         )
         _explore.value = state
-        (state as? UiState.Success)?.data?.let(::loadMoodGenreArtwork)
+        if (exploreArtworkEnabled) {
+            (state as? UiState.Success)?.data?.let(::loadMoodGenreArtwork)
+        }
     }
 
     /**
@@ -1439,32 +1515,46 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * without saturating the browse client or delaying the category list.
      */
     private fun loadMoodGenreArtwork(sections: List<MoodGenreSection>) {
-        viewModelScope.launch {
+        moodGenreArtworkJob?.cancel()
+        moodGenreArtworkJob = viewModelScope.launch {
             val limiter = Semaphore(4)
-            coroutineScope {
-                sections.flatMap(MoodGenreSection::items).forEach { item ->
-                    launch {
-                        val artwork = limiter.withPermit {
-                            if (NavidromeIds.isNavidrome(item.browseId)) {
-                                NavidromeRepository.moodGenreArtwork(item).getOrNull()
-                            } else {
-                                YtMusicRepository.moodGenreArtwork(item.browseId, item.params).getOrNull()
-                            }
-                        } ?: return@launch
-                        val current = (_explore.value as? UiState.Success)?.data ?: return@launch
-                        _explore.value = UiState.Success(current.map { section ->
-                            section.copy(items = section.items.map { currentItem ->
-                                if (currentItem.browseId == item.browseId && currentItem.params == item.params) {
-                                    currentItem.copy(thumbnailUrl = artwork)
-                                } else {
-                                    currentItem
+            sections.flatMap(MoodGenreSection::items)
+                .filter { it.thumbnailUrl == null }
+                .chunked(4)
+                .forEach { batch ->
+                    val resolved = coroutineScope {
+                        batch.map { item ->
+                            async {
+                                val artwork = limiter.withPermit {
+                                    if (NavidromeIds.isNavidrome(item.browseId)) {
+                                        NavidromeRepository.moodGenreArtwork(item).getOrNull()
+                                    } else {
+                                        YtMusicRepository.moodGenreArtwork(item.browseId, item.params).getOrNull()
+                                    }
                                 }
-                            })
-                        })
+                                item to artwork
+                            }
+                        }
+                        .map { it.await() }
                     }
+                    val artworkById = resolved.mapNotNull { (item, artwork) ->
+                        artwork?.let { (item.browseId to item.params) to it }
+                    }.toMap()
+                    if (artworkById.isEmpty()) return@forEach
+                    val current = (_explore.value as? UiState.Success)?.data ?: return@launch
+                    _explore.value = UiState.Success(current.map { section ->
+                        section.copy(items = section.items.map { item ->
+                            artworkById[item.browseId to item.params]
+                                ?.let { item.copy(thumbnailUrl = it) } ?: item
+                        })
+                    })
                 }
-            }
         }
+    }
+
+    /** Seeds notification/player hearts without downloading the whole library catalogue. */
+    private fun primeNavidromeLikes() {
+        viewModelScope.launch { NavidromeRepository.likedSongs() }
     }
 
     fun openMoodGenre(item: MoodGenre) {
@@ -1661,9 +1751,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun loadLibrary() {
         if (!navidromeActive && !_signedIn.value) return
+        if (libraryLoadJob?.isActive == true) return
         val identity = listenerKey()
         _library.value = UiState.Loading
-        viewModelScope.launch { fetchLibrary(identity) }
+        libraryLoadJob = viewModelScope.launch { fetchLibrary(identity) }
     }
 
     private suspend fun fetchLibrary(identity: String?) {
@@ -2044,11 +2135,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             .collectLatest { input ->
                 if (!stillWanted(input)) return@collectLatest
                 val fetched = if (navidromeActive) {
-                    NavidromeRepository.search(input, SearchFilter.ALL).getOrNull()?.map { row -> when (row) {
-                        is SearchResult.TopTrack -> row.song.title
-                        is SearchResult.Track -> row.song.title
-                        is SearchResult.Browse -> row.item.title
-                    } } ?: return@collectLatest
+                    NavidromeRepository.suggestions(input).getOrNull() ?: return@collectLatest
                 } else YtMusicRepository.searchSuggestions(input).getOrNull() ?: return@collectLatest
                 // Asked again on the way back; the field is live throughout.
                 if (!stillWanted(input)) return@collectLatest
@@ -2215,6 +2302,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        /** Keeps invisible network/cache work out of the first interaction window. */
+        private const val STARTUP_BACKGROUND_WARMUP_MS = 3_000L
+
         /**
          * How long a keystroke waits before the typeahead is asked about it.
          *
@@ -2407,7 +2497,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 browseId == NavidromeIds.LIKED -> NavidromeRepository.likedSongs().fold(
                     onSuccess = { songs ->
-                        artwork = songs.firstOrNull()?.thumbnailUrl
+                        artwork = NavidromeIds.LIKED_ARTWORK
                         UiState.Success(songs)
                     },
                     onFailure = { UiState.Error(it.friendly()) },
@@ -2433,6 +2523,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     NavidromeRepository.artist(
                         browseId,
                         text(R.string.albums),
+                        text(R.string.eps),
+                        text(R.string.singles),
                         text(R.string.fans_also_like),
                     ).fold(
                         onSuccess = { page ->

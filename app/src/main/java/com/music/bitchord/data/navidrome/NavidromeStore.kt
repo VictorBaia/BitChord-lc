@@ -13,6 +13,7 @@ object NavidromeStore {
     private const val KEY_WIFI_STREAM_QUALITY = "wifi_stream_quality"
     private const val KEY_CELLULAR_STREAM_QUALITY = "cellular_stream_quality"
     private const val KEY_DOWNLOAD_STREAM_QUALITY = "download_stream_quality"
+    private const val KEY_FORCE_STREAMING = "force_streaming"
     private const val KEY_LYRICS_MODE = "lyrics_mode"
     private const val KEY_ENRICH_ARTISTS = "enrich_artists"
 
@@ -39,6 +40,7 @@ object NavidromeStore {
             .putString(KEY_WIFI_STREAM_QUALITY, value.wifiStreamQuality.name)
             .putString(KEY_CELLULAR_STREAM_QUALITY, value.cellularStreamQuality.name)
             .putString(KEY_DOWNLOAD_STREAM_QUALITY, value.downloadStreamQuality.name)
+            .putBoolean(KEY_FORCE_STREAMING, value.forceStreaming)
             .putString(KEY_LYRICS_MODE, value.lyricsMode.name)
             .putBoolean(KEY_ENRICH_ARTISTS, value.enrichArtists)
             .apply()
@@ -56,6 +58,7 @@ object NavidromeStore {
         wifiStreamQuality = readQuality(KEY_WIFI_STREAM_QUALITY, NavidromeStreamQuality.ORIGINAL),
         cellularStreamQuality = readQuality(KEY_CELLULAR_STREAM_QUALITY, NavidromeStreamQuality.AAC_192),
         downloadStreamQuality = readQuality(KEY_DOWNLOAD_STREAM_QUALITY, NavidromeStreamQuality.ORIGINAL),
+        forceStreaming = prefs.getBoolean(KEY_FORCE_STREAMING, false),
         lyricsMode = prefs.getString(KEY_LYRICS_MODE, null)?.let { stored ->
             NavidromeLyricsMode.entries.firstOrNull { it.name == stored }
         } ?: NavidromeLyricsMode.APP_DEFAULT,

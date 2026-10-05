@@ -185,6 +185,13 @@ internal const val ART_RETRIES = 3
 /** How long to leave it before trying a failed cover again. */
 internal const val ART_RETRY_DELAY_MS = 1_500L
 
+private data class CreditsState(
+    val title: String,
+    val artist: String,
+    val albumId: String?,
+    val artistId: String?,
+)
+
 /**
  * How long a canvas lookup waits for the track's album name before giving up
  * on it. Long enough to cover the album lookup on a normal connection, short
@@ -1506,6 +1513,7 @@ fun NowPlayingScreen(
                                     lines = lyricsTranslation.displayedLyrics,
                                     trackKey = song.videoId,
                                     positionMs = lyricsPosition,
+                                    seekRevision = position.discontinuityVersion,
                                     isPlaying = isPlaying,
                                     durationMs = durationMs,
                                     lyricsUnavailable = lyricsUnavailable,
@@ -1606,6 +1614,7 @@ fun NowPlayingScreen(
                                     subLines = lyricsTranslation.subLines,
                                     trackKey = song.videoId,
                                     positionMs = lyricsPositionMs,
+                                    seekRevision = position.discontinuityVersion,
                                     looking = !lyricsUnavailable,
                                     isPlaying = isPlaying,
                                     onSeekToLine = seekToLyric,
@@ -2608,14 +2617,24 @@ fun NowPlayingScreen(
                         // ("… (Live)") dissolves into the new one instead of
                         // snapping while the rest of the switch moves around
                         // it.
+                        // The browse ids can arrive after the title/artist
+                        // text. They are part of the visual row's interaction
+                        // state even though they do not change what is drawn:
+                        // omitting them here lets Crossfade keep the first
+                        // non-clickable MarqueeText instance forever.
                         Crossfade(
-                            targetState = song.title to song.artist,
+                            targetState = CreditsState(
+                                title = song.title,
+                                artist = song.artist,
+                                albumId = song.albumId,
+                                artistId = song.artistId,
+                            ),
                             animationSpec = tween(durationMillis = 300),
                             label = "playerCredits",
-                        ) {
+                        ) { credits ->
                             Column {
                                 MarqueeText(
-                                    text = song.title,
+                                    text = credits.title,
                                     style = MaterialTheme.typography.titleLarge.copy(
                                         fontSize = 20.sp,
                                     ),
@@ -2629,10 +2648,10 @@ fun NowPlayingScreen(
                                     onOverflowChange = { titleOverflowing = it },
                                     // Only the tracks YouTube hands us a browse id for
                                     // lead anywhere; the rest stay plain text.
-                                    modifier = Modifier.opensPage(song.albumId, onOpenAlbum),
+                                    modifier = Modifier.opensPage(credits.albumId, onOpenAlbum),
                                 )
                                 MarqueeText(
-                                    text = song.artist,
+                                    text = credits.artist,
                                     style = MaterialTheme.typography.titleLarge.copy(
                                         fontWeight = FontWeight.W500,
                                         fontSize = 20.sp,
@@ -2643,7 +2662,7 @@ fun NowPlayingScreen(
                                     // starting together reads as clutter, so the artist
                                     // waits a beat before it joins in.
                                     startDelayMillis = if (titleOverflowing) MARQUEE_ARTIST_STAGGER_MS else 0L,
-                                    modifier = Modifier.opensPage(song.artistId, onOpenArtist),
+                                    modifier = Modifier.opensPage(credits.artistId, onOpenArtist),
                                 )
                             }
                         }
@@ -2702,6 +2721,7 @@ fun NowPlayingScreen(
                                     subLines = lyricsTranslation.subLines,
                                     trackKey = song.videoId,
                                     positionMs = lyricsPositionMs,
+                                    seekRevision = position.discontinuityVersion,
                                     looking = !lyricsUnavailable,
                                     isPlaying = isPlaying,
                                     active = lyricsPanelVisible,
@@ -2862,6 +2882,7 @@ fun NowPlayingScreen(
                     lines = lyricsTranslation.displayedLyrics,
                     trackKey = song.videoId,
                     positionMs = lyricsPosition,
+                    seekRevision = position.discontinuityVersion,
                     isPlaying = isPlaying,
                     durationMs = durationMs,
                     lyricsUnavailable = lyricsUnavailable,

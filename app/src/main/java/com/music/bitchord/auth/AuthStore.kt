@@ -22,6 +22,7 @@ class AuthStore(context: Context) {
 
     private val prefs: SharedPreferences =
         EncryptedPrefs.open(context, "bitchord_auth", "bitchord_auth_plain")
+    @Volatile private var cachedSessions: List<GoogleAccountSession>? = null
 
     var cookie: String?
         get() = prefs.getString(KEY_COOKIE, null)
@@ -34,9 +35,10 @@ class AuthStore(context: Context) {
      */
     var sessions: List<GoogleAccountSession>
         get() {
+            cachedSessions?.let { return it }
             val saved = sessionsFromJson(prefs.getString(KEY_SESSIONS, null))
-            if (saved.isNotEmpty()) return saved
-            val legacy = cookie ?: return emptyList()
+            if (saved.isNotEmpty()) return saved.also { cachedSessions = it }
+            val legacy = cookie ?: return emptyList<GoogleAccountSession>().also { cachedSessions = it }
             val profile = YouTubeProfile(
                 profileId = profileId(channelPageId, channelDataSyncId, channelName ?: "Personal"),
                 name = channelName ?: "Personal",
@@ -61,10 +63,14 @@ class AuthStore(context: Context) {
         set(value) = prefs.edit().putString(KEY_ACTIVE_PROFILE, value).apply()
 
     val activeSession: GoogleAccountSession?
-        get() = sessions.firstOrNull { it.accountId == activeAccountId }
-            ?: sessions.firstOrNull()
+        get() {
+            val available = sessions
+            return available.firstOrNull { it.accountId == activeAccountId }
+                ?: available.firstOrNull()
+        }
 
     fun replaceSessions(value: List<GoogleAccountSession>) {
+        cachedSessions = value
         prefs.edit().putString(KEY_SESSIONS, value.toJson()).apply()
     }
 
@@ -179,6 +185,7 @@ class AuthStore(context: Context) {
      * Signs out of YouTube Music only — the Discord login is a separate account.
      */
     fun signOut() {
+        cachedSessions = emptyList()
         prefs.edit().remove(KEY_COOKIE).remove(KEY_SESSIONS)
             .remove(KEY_ACTIVE_ACCOUNT).remove(KEY_ACTIVE_PROFILE).apply()
         clearChannel()

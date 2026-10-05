@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.core.os.bundleOf
 import androidx.media3.common.MediaItem
+import androidx.media3.common.C
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
@@ -40,6 +41,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.ArrayDeque
 import java.util.Locale
 
 /**
@@ -61,6 +63,8 @@ import java.util.Locale
 @Stable
 class PlaybackPosition internal constructor() {
     var positionMs by mutableLongStateOf(0L)
+        internal set
+    var discontinuityVersion by mutableLongStateOf(0L)
         internal set
 }
 
@@ -188,6 +192,8 @@ fun Song.toSongBundle(): Bundle = bundleOf(
     "durationText" to durationText,
     "artistId" to artistId,
     "albumId" to albumId,
+    "spotifyUri" to spotifyUri,
+    "isrc" to isrc,
     "albumName" to albumName,
     "isVideo" to isVideo,
     "isVideoOrigin" to isVideoOrigin,
@@ -212,6 +218,8 @@ fun songFromBundle(b: Bundle): Song = Song(
     durationText = b.getString("durationText"),
     artistId = b.getString("artistId"),
     albumId = b.getString("albumId"),
+    spotifyUri = b.getString("spotifyUri"),
+    isrc = b.getString("isrc"),
     albumName = b.getString("albumName"),
     isVideo = b.getBoolean("isVideo"),
     isVideoOrigin = b.getBoolean("isVideoOrigin"),
@@ -278,6 +286,13 @@ fun rememberPlayerState(controller: MediaController?): PlayerState {
         // main thread, for as long as the queue kept playing.
         var queueChanged = false
 
+        fun effectiveDurationMs(item: MediaItem?): Long {
+            val reported = player.duration
+            if (reported > 0L && reported != C.TIME_UNSET) return reported
+            return item?.mediaMetadata?.extras?.getString(EXTRA_DURATION)
+                ?.let(TrackMatcher::secondsOf)?.times(1_000L) ?: 0L
+        }
+
         fun sync(
             error: String? = null,
             rebuildQueue: Boolean = false,
@@ -285,7 +300,27 @@ fun rememberPlayerState(controller: MediaController?): PlayerState {
         ) {
             val item = player.currentMediaItem
             if (rebuildQueue) {
-                queueSnapshot = (0 until player.mediaItemCount)
+                val itemCount = player.mediaItemCount
+                // A drag only changes order. Reusing the existing Song objects
+                // avoids decoding every metadata Bundle across MediaSession on
+                // each neighbour crossed while preserving the exact same live
+                // queue updates and placement animation.
+                val reordered = if (itemCount == queueSnapshot.size && itemCount > 0) {
+                    val oldByEntry = HashMap<String, ArrayDeque<Song>>(itemCount)
+                    queueSnapshot.forEach { song ->
+                        val key = song.queueEntryId ?: song.videoId
+                        oldByEntry.getOrPut(key) { ArrayDeque() }.addLast(song)
+                    }
+                    buildList(itemCount) {
+                        for (index in 0 until itemCount) {
+                            val mediaItem = player.getMediaItemAt(index)
+                            val key = mediaItem.queueEntryId ?: mediaItem.mediaId
+                            val existing = oldByEntry[key]?.pollFirst() ?: return@buildList
+                            add(existing)
+                        }
+                    }.takeIf { it.size == itemCount && oldByEntry.values.all { queue -> queue.isEmpty() } }
+                } else null
+                queueSnapshot = reordered ?: (0 until itemCount)
                     .map { player.getMediaItemAt(it).toSong() }
             } else if (refreshCurrentQueueItem && item != null) {
                 val index = player.currentMediaItemIndex
@@ -299,7 +334,7 @@ fun rememberPlayerState(controller: MediaController?): PlayerState {
             state = state.copy(
                 song = item?.toSong(),
                 isPlaying = player.isPlaying,
-                durationMs = player.duration.coerceAtLeast(0L),
+                durationMs = effectiveDurationMs(item),
                 error = error,
                 isLoading = player.playbackState == Player.STATE_BUFFERING,
                 repeatMode = player.repeatMode,
@@ -313,6 +348,15 @@ fun rememberPlayerState(controller: MediaController?): PlayerState {
         }
 
         val listener = object : Player.Listener {
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int,
+            ) {
+                position.positionMs = newPosition.positionMs.coerceAtLeast(0L)
+                position.discontinuityVersion++
+            }
+
             override fun onTimelineChanged(timeline: Timeline, reason: Int) {
                 // The count guard is belt and braces: a playlist change is the
                 // only reason the queue can be a different length, so if it is,
@@ -347,7 +391,10 @@ fun rememberPlayerState(controller: MediaController?): PlayerState {
     LaunchedEffect(controller, state.isPlaying, foreground) {
         while (controller != null && state.isPlaying && foreground) {
             position.positionMs = controller.currentPosition.coerceAtLeast(0L)
-            val duration = controller.duration.coerceAtLeast(0L)
+            val reported = controller.duration
+            val duration = if (reported > 0L && reported != C.TIME_UNSET) reported else {
+                state.song?.durationText?.let(TrackMatcher::secondsOf)?.times(1_000L) ?: 0L
+            }
             if (duration != state.durationMs) state = state.copy(durationMs = duration)
             delay(500)
         }
@@ -371,6 +418,8 @@ fun MediaItem.toSong() = Song(
     artistId = mediaMetadata.extras?.getString(EXTRA_ARTIST_ID),
     albumId = mediaMetadata.extras?.getString(EXTRA_ALBUM_ID),
     albumName = mediaMetadata.albumTitle?.toString(),
+    spotifyUri = mediaMetadata.extras?.getString(EXTRA_SPOTIFY_URI),
+    isrc = mediaMetadata.extras?.getString(EXTRA_ISRC),
     isExplicit = mediaMetadata.extras?.takeIf { it.containsKey(EXTRA_EXPLICIT) }
         ?.getBoolean(EXTRA_EXPLICIT),
     isVideo = mediaMetadata.extras?.getBoolean(EXTRA_IS_VIDEO) == true,
@@ -440,6 +489,8 @@ private const val EXTRA_PLAYBACK_SOURCE_ID = "bitchord.playbackSourceId"
  */
 private const val EXTRA_ARTIST_ID = "bitchord.artistId"
 private const val EXTRA_ALBUM_ID = "bitchord.albumId"
+private const val EXTRA_SPOTIFY_URI = "bitchord.spotifyUri"
+private const val EXTRA_ISRC = "bitchord.isrc"
 
 /** @see Song.setVideoId */
 private const val EXTRA_SET_VIDEO_ID = "bitchord.setVideoId"
@@ -460,7 +511,7 @@ internal const val EXTRA_LOCAL_PATH = "bitchord.localPath"
  * with the other loses information. Carried so that [toSong] can give it back
  * to the live queue and matching code.
  */
-private const val EXTRA_DURATION = "bitchord.durationText"
+internal const val EXTRA_DURATION = "bitchord.durationText"
 private const val EXTRA_EXPLICIT = "bitchord.explicit"
 private const val EXTRA_IS_VIDEO = "bitchord.isVideo"
 private const val EXTRA_VIDEO_ORIGIN = "bitchord.isVideoOrigin"
@@ -570,8 +621,11 @@ fun Song.toMediaItem(): MediaItem {
     // [MediaItem.toSong], so an item waiting in the live queue can carry a URI
     // that has become stale since it was created. Checking only the lookup
     // leaves that path unguarded.
-    val offlineUri = localUri?.takeUnless(Downloads::isMissingLocalFile)
-        ?: Downloads.verifiedSavedUri(videoId)
+    val forceNavidromeStream = navidromeTrack != null && NavidromeStore.config.value.forceStreaming
+    val offlineUri = if (forceNavidromeStream) null else {
+        localUri?.takeUnless(Downloads::isMissingLocalFile)
+            ?: Downloads.verifiedSavedUri(videoId)
+    }
     val uriString = offlineUri ?: when {
         videoId.startsWith("content://") || videoId.startsWith("file://") -> videoId
         navidromeTrack != null -> "bitchord://navidrome?id=${Uri.encode(navidromeTrack)}${matchQuery()}${navidromeQualityQuery()}"
@@ -640,9 +694,16 @@ fun Song.toMediaItem(): MediaItem {
             // back a null duration and later matching loses the `&d=` it
             // depends on.
             .apply {
+                // This native Media3 field is what the platform MediaSession
+                // exports as METADATA_KEY_DURATION. One UI uses it while a
+                // generated AAC/MP3 stream still reports TIME_UNSET; keeping
+                // the string extra below preserves the app's existing model.
+                TrackMatcher.secondsOf(durationText)?.takeIf { it > 0 }?.let { seconds ->
+                    setDurationMs(seconds * 1_000L)
+                }
                 if (queueTier != QueueTier.CONTEXT || queueEntryId != null || fromAutoplay ||
                     offlineUri != null || durationText != null ||
-                    artistId != null || albumId != null || setVideoId != null ||
+                    artistId != null || albumId != null || spotifyUri != null || isrc != null || setVideoId != null ||
                     isExplicit != null || isVideo || isVideoOrigin || radioName != null ||
                     playbackSource != null || playbackSourceType != null || playbackSourceId != null
                 ) {
@@ -660,6 +721,8 @@ fun Song.toMediaItem(): MediaItem {
                             EXTRA_DURATION to durationText,
                             EXTRA_ARTIST_ID to artistId,
                             EXTRA_ALBUM_ID to albumId,
+                            EXTRA_SPOTIFY_URI to spotifyUri,
+                            EXTRA_ISRC to isrc,
                             EXTRA_SET_VIDEO_ID to setVideoId,
                             EXTRA_EXPLICIT to isExplicit,
                             EXTRA_IS_VIDEO to isVideo,
@@ -673,7 +736,7 @@ fun Song.toMediaItem(): MediaItem {
     .build()
 }
 
-/** Freezes the Navidrome rendition choice on this MediaItem. */
+/** Cache hint only; playback selects the current quality when the stream first opens. */
 private fun navidromeQualityQuery(): String = NavidromeStore.config.value
     .streamQuality(metered = AppSettings.meteredConnection.value == true)
     .let { quality -> buildString {

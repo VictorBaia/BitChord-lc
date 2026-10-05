@@ -27,6 +27,21 @@ import androidx.annotation.RequiresApi
  */
 object DirectAudioProbe {
 
+    private data class ProbeKey(
+        val sampleRateHz: Int,
+        val channelCount: Int,
+        val deviceId: Int,
+        val deviceType: Int,
+    )
+
+    private data class CachedProbe(
+        val createdAtNanos: Long,
+        val support: DirectSupport,
+    )
+
+    private const val CACHE_TTL_NANOS = 2_000_000_000L
+    private val probeCache = HashMap<ProbeKey, CachedProbe>()
+
     data class DirectSupport(
         val isDirectSupported: Boolean,
         val isOffloadSupported: Boolean,
@@ -72,11 +87,29 @@ object DirectAudioProbe {
             return DirectSupport.NONE
         }
 
-        return try {
+        val key = ProbeKey(
+            sampleRateHz = sampleRateHz,
+            channelCount = channelCount,
+            deviceId = activeDevice?.id ?: -1,
+            deviceType = activeDevice?.type ?: -1,
+        )
+        val now = System.nanoTime()
+        synchronized(probeCache) {
+            probeCache[key]?.takeIf { now - it.createdAtNanos <= CACHE_TTL_NANOS }?.let {
+                return it.support
+            }
+        }
+
+        val support = try {
             probeDirectSupportApi33(audioManager, sampleRateHz, channelCount, activeDevice)
         } catch (_: Throwable) {
             DirectSupport.NONE
         }
+        synchronized(probeCache) {
+            probeCache.entries.removeAll { now - it.value.createdAtNanos > CACHE_TTL_NANOS }
+            probeCache[key] = CachedProbe(now, support)
+        }
+        return support
     }
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)

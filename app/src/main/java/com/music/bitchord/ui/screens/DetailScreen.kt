@@ -489,7 +489,10 @@ fun DetailScreen(
                                 contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
-                                items(top.chunked(SONGS_PER_COLUMN)) { column ->
+                                items(
+                                    items = top.chunked(SONGS_PER_COLUMN),
+                                    key = { column -> column.firstOrNull()?.videoId.orEmpty() },
+                                ) { column ->
                                     Column(Modifier.width(columnWidth)) {
                                         column.forEach { song ->
                                             CompactSongRow(
@@ -582,7 +585,7 @@ fun DetailScreen(
             }
 
             // Albums / Singles & EPs carousels (artist pages).
-            items(page.sections) { shelf ->
+            items(page.sections, key = { shelf -> "section:${shelf.title}" }) { shelf ->
                 val canShowAll = shelf.items.size > ARTIST_ROW_MAX_ITEMS
                 val displayItems = remember(shelf.items) {
                     if (canShowAll) shelf.items.take(ARTIST_ROW_MAX_ITEMS) else shelf.items
@@ -597,7 +600,10 @@ fun DetailScreen(
                         contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                         horizontalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
-                        items(displayItems) { item ->
+                        items(
+                            items = displayItems,
+                            key = { item -> item.browseId ?: "${item.title}:${item.subtitle}" },
+                        ) { item ->
                             SectionCard(
                                 item = item,
                                 palette = palette,

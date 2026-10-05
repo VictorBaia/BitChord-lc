@@ -93,6 +93,8 @@
     <string name="songs">Songs</string>
     <string name="artists">Artists</string>
     <string name="albums">Albums</string>
+    <string name="eps">EPs</string>
+    <string name="singles">Singles</string>
     <string name="no_album_metadata">None of these tracks say what album they are from.</string>
     <string name="search_empty">Search your library.</string>
     <string name="recent_searches">Recent searches</string>
@@ -215,6 +217,10 @@
     <string name="replay_subtitle">Your top songs, artists, albums and genres</string>
     <string name="work_out_genres">Work out genres</string>
     <string name="export_data">Export data</string>
+    <string name="export_crash_report">Export crash report</string>
+    <string name="export_crash_report_subtitle">Crashes, unexpected exits, resource usage and recent player diagnostics</string>
+    <string name="export_crash_report_succeeded">Crash report exported</string>
+    <string name="export_crash_report_failed">Could not export crash report: %1$s</string>
     <string name="export_data_subtitle">Settings and listening history, as one JSON file</string>
     <string name="import_data">Import data</string>
     <string name="import_data_subtitle">Replaces the settings and history on this device</string>
@@ -338,10 +344,14 @@
     <string name="synced_lyrics_subtitle">Lights up the words on the player as they’re sung</string>
     <string name="lyrics_sources">Lyrics sources</string>
     <string name="song_cache_limit">Song cache limit</string>
+    <string name="image_cache_limit">Image cache limit</string>
+    <string name="image_cache_limit_subtitle">Keeps album, artist, and animated artwork available offline</string>
     <string name="clear_song_cache">Clear song cache</string>
     <string name="clear_song_cache_subtitle">Frees space used by downloaded audio</string>
+    <string name="clear_song_cache_confirmation">Clear all cached songs? They will be streamed or downloaded again when needed.</string>
     <string name="clear_image_cache">Clear image cache</string>
     <string name="clear_image_cache_subtitle">Frees space used by album artwork</string>
+    <string name="clear_image_cache_confirmation">Clear all cached artwork? Images will be downloaded again when needed.</string>
     <string name="play_next_on_swipe">Play next on swipe</string>
     <string name="dont_repeat_songs">Don’t repeat songs in current session</string>
     <string name="stop_music_on_close">Stop music on close from recents</string>
@@ -660,6 +670,7 @@
     <string name="search_this_list">Search this list</string>
     <string name="second_button">Second button</string>
     <string name="share">Share</string>
+    <string name="open_in_spotify">Open in Spotify</string>
     <string name="sharing_as">Sharing as @%1$s</string>
     <string name="sharing_listens">Sharing your listens</string>
     <string name="show_what_playing">Show what I am playing</string>
@@ -1190,4 +1201,17 @@
     <string name="navidrome_profile_photo">Profile photo</string>
     <string name="navidrome_profile_photo_set">Photo selected</string>
     <string name="navidrome_profile_photo_unset">Choose a photo</string>
+    <string name="navidrome_force_sync">Force full synchronization</string>
+    <string name="navidrome_syncing">Synchronizing…</string>
+    <string name="navidrome_sync_completed">Full synchronization completed</string>
+    <string name="navidrome_sync_failed">Full synchronization failed</string>
+    <string name="streaming">Streaming</string>
+    <string name="force_music_streaming">Force music streaming</string>
+    <string name="force_music_streaming_description">Stream music, ignoring cached/downloaded files.</string>
+    <string name="manage_cached_music">Manage cached music</string>
+    <string name="manage_cached_music_description">View or remove music kept for later playback</string>
+    <string name="manage_downloads">Manage downloads</string>
+    <string name="manage_downloads_description">View or remove music downloaded by you</string>
+    <string name="no_cached_music">No music is cached</string>
+    <string name="no_downloaded_music">No music is downloaded</string>
 </resources>

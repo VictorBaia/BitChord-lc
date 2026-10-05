@@ -71,7 +71,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.withFrameMillis
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.BlurredEdgeTreatment
@@ -375,7 +375,7 @@ private class ScrollRun(val id: Int, val delta: Float, val durationMs: Int) {
  * nor the drift is what you want to be reading against.
  */
 private fun scrollLead(lines: List<LyricLine>, positionMs: Long): Long {
-    val current = lines.indexOfLast { it.timeMs <= positionMs }
+    val current = latestLyricIndex(lines, positionMs)
     // Before the first line's own timestamp there is no current line to
     // measure a run-up from. [indexOfLast] answers -1 there, and the guard
     // below does not catch it: `current + 1` is 0, which is a perfectly real
@@ -475,6 +475,7 @@ internal fun CurrentLyricStrip(
     trackKey: String,
     /** Read in here — a tick recomposes the strip alone. */
     positionMs: () -> Long,
+    seekRevision: Long = 0L,
     isPlaying: Boolean,
     durationMs: Long,
     lyricsUnavailable: Boolean,
@@ -495,6 +496,7 @@ internal fun CurrentLyricStrip(
                 lines = lines,
                 trackKey = trackKey,
                 positionMs = positionMs(),
+                seekRevision = seekRevision,
                 isPlaying = isPlaying,
                 durationMs = durationMs,
                 onClick = onClick,
@@ -532,10 +534,13 @@ private fun rememberLyricClock(
     trackKey: Any,
     positionMs: Long,
     isPlaying: Boolean,
+    seekRevision: Long = 0L,
 ): MutableLongState {
-    val startedAtMs = remember(trackKey) { SystemClock.elapsedRealtime() }
+    val startedAtMs = remember(trackKey, seekRevision) { SystemClock.elapsedRealtime() }
+    // Keep the State identity: derived lyric rows retain this clock reference.
     val clock = remember(trackKey) { mutableLongStateOf(positionMs) }
-    val reconciler = remember(trackKey) {
+    var reconciledSeekRevision by remember(trackKey) { mutableLongStateOf(seekRevision) }
+    val reconciler = remember(trackKey, seekRevision) {
         LyricClockReconciler(positionMs, startedAtMs, isPlaying)
     }
     // Gated on the app being on screen. The loop asks for a frame, writes a
@@ -548,7 +553,11 @@ private fun rememberLyricClock(
     // restarts the effect and reconciles the latest playback report before
     // requesting another frame.
     val foreground = rememberIsForeground()
-    LaunchedEffect(positionMs, isPlaying, foreground) {
+    LaunchedEffect(positionMs, isPlaying, foreground, seekRevision) {
+        if (reconciledSeekRevision != seekRevision) {
+            clock.longValue = positionMs
+            reconciledSeekRevision = seekRevision
+        }
         clock.longValue = reconciler.reconcile(
             displayedMs = clock.longValue,
             reportedMs = positionMs,
@@ -556,17 +565,27 @@ private fun rememberLyricClock(
             isPlaying = isPlaying,
         )
         if (!isPlaying || !foreground) return@LaunchedEffect
-        val firstFrame = withFrameMillis { it }
+        val firstFrame = withFrameNanos { it }
+        var nextPublishedFrame = firstFrame
         while (true) {
-            withFrameMillis { frame ->
+            withFrameNanos { frame ->
+                // The panel remains smooth on 90/120 Hz displays without
+                // making text blur, clipping and glow repaint more than 60
+                // times each second. Audio timing still comes from every
+                // authoritative player report and seeks reset immediately.
+                if (frame < nextPublishedFrame) return@withFrameNanos
+                nextPublishedFrame = maxOf(nextPublishedFrame + LYRIC_FRAME_NS, frame)
                 // Advance from the authoritative report, not the held display value:
                 // otherwise each small correction would accumulate permanent drift.
-                clock.longValue = maxOf(clock.longValue, positionMs + frame - firstFrame)
+                val target = maxOf(clock.longValue, positionMs + (frame - firstFrame) / 1_000_000L)
+                if (target != clock.longValue) clock.longValue = target
             }
         }
     }
     return clock
 }
+
+private const val LYRIC_FRAME_NS = 16_666_667L
 
 /**
  * A lyric line with the sung part of it lit, the rest dimmed, and the boundary
@@ -1404,6 +1423,7 @@ internal fun LyricsPanel(
     subLines: List<LyricLine>? = null,
     trackKey: String,
     positionMs: Long,
+    seekRevision: Long = 0L,
     /** Whether a lookup for this track is still in flight. */
     looking: Boolean,
     isPlaying: Boolean,
@@ -1420,7 +1440,7 @@ internal fun LyricsPanel(
     modifier: Modifier = Modifier,
 ) {
     val panelPlaying = isPlaying && active
-    val clock = rememberLyricClock(trackKey, positionMs, panelPlaying)
+    val clock = rememberLyricClock(trackKey, positionMs, panelPlaying, seekRevision)
     val subReveal = rememberSubLyricsReveal(subLines, trackKey)
 
     val isSynced = remember(lines) { lines.any { it.timeMs > 0L } }
@@ -2183,6 +2203,7 @@ private fun CurrentLyricLine(
     lines: List<LyricLine>,
     trackKey: Any,
     positionMs: Long,
+    seekRevision: Long = 0L,
     isPlaying: Boolean,
     durationMs: Long,
     onClick: () -> Unit,
@@ -2223,10 +2244,10 @@ private fun CurrentLyricLine(
         return
     }
 
-    val clock = rememberLyricClock(trackKey, positionMs, isPlaying)
+    val clock = rememberLyricClock(trackKey, positionMs, isPlaying, seekRevision)
 
     val index by remember(lines) {
-        derivedStateOf { lines.indexOfLast { it.timeMs <= clock.longValue } }
+        derivedStateOf { latestLyricIndex(lines, clock.longValue) }
     }
     val current = lines.getOrNull(index)
     // Before the first line, and through instrumental breaks, show the note.

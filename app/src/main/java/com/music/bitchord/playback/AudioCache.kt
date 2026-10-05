@@ -26,6 +26,7 @@ import com.music.bitchord.data.sources.SourceRegistry
 import com.music.bitchord.data.sources.SourceResolver
 import com.music.bitchord.data.sources.TrackMatcher
 import com.music.bitchord.download.Downloads
+import com.music.bitchord.data.navidrome.NavidromeStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -36,6 +37,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -62,12 +64,16 @@ import kotlin.coroutines.coroutineContext
  */
 @UnstableApi
 object AudioCache {
+    data class CachedTrack(val key: String, val title: String, val artist: String, val sizeBytes: Long)
+
+    private const val META_TITLE = "bitchord.title"
+    private const val META_ARTIST = "bitchord.artist"
 
     private const val TAG = "BitChord"
 
     /**
      * The disk budget, straight from [AppSettings] — 512MB by default, roughly
-     * 150 tracks at the highest bitrate offered, adjustable up to 10GB from
+     * 150 tracks at the highest bitrate offered, adjustable up to 8GB from
      * Settings. Least-recently-used entries are dropped past it, so it's a
      * ceiling rather than something the listener has to manage day to day.
      */
@@ -186,6 +192,9 @@ object AudioCache {
     const val QUEUE_DEPTH = QUEUE_LOOKAHEAD + 1
 
     private lateinit var cache: SimpleCache
+    private val initialized = CountDownLatch(1)
+    @Volatile private var initializationStarted = false
+    @Volatile private var initializationFailure: Throwable? = null
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -196,12 +205,17 @@ object AudioCache {
      * dropping the spans that named them.
      */
     fun init(context: Context) {
-        evictor.maxBytes = AppSettings.audioCacheLimitBytes.value
-        cache = SimpleCache(
-            File(context.cacheDir, "audio"),
-            evictor,
-            StandaloneDatabaseProvider(context),
-        )
+        synchronized(this) {
+            if (initializationStarted) return
+            initializationStarted = true
+        }
+        try {
+            evictor.maxBytes = AppSettings.audioCacheLimitBytes.value
+            cache = SimpleCache(
+                File(context.cacheDir, "audio"),
+                evictor,
+                StandaloneDatabaseProvider(context),
+            )
         // Builds before album/explicit/video-aware and credit-aware matching
         // may have cached a completely different recording under a YouTube
         // track's `#alt` key.
@@ -209,22 +223,34 @@ object AudioCache {
         // without resolving, then refuses the correct 320kbps replacement as
         // no quality gain. Drop only the substitution-capable entries once;
         // ordinary YouTube cache entries remain warm.
-        val state = context.getSharedPreferences(CACHE_STATE_PREFS, Context.MODE_PRIVATE)
-        if (state.getInt(KEY_MATCHING_SCHEMA, 0) < MATCHING_SCHEMA) {
-            val stale = cache.keys.filter { it.endsWith(ALT_SUFFIX) }
-            stale.forEach { runCatching { cache.removeResource(it) } }
-            state.edit().putInt(KEY_MATCHING_SCHEMA, MATCHING_SCHEMA).apply()
-            TrackLog.d(TAG, "invalidated ${stale.size} source cache entries after matcher upgrade")
-        }
+            val state = context.getSharedPreferences(CACHE_STATE_PREFS, Context.MODE_PRIVATE)
+            if (state.getInt(KEY_MATCHING_SCHEMA, 0) < MATCHING_SCHEMA) {
+                val stale = cache.keys.filter { it.endsWith(ALT_SUFFIX) }
+                stale.forEach { runCatching { cache.removeResource(it) } }
+                state.edit().putInt(KEY_MATCHING_SCHEMA, MATCHING_SCHEMA).apply()
+                TrackLog.d(TAG, "invalidated ${stale.size} source cache entries after matcher upgrade")
+            }
         // A SimpleCache can only be opened once per process, so the ceiling
         // moves by mutating this evictor rather than reopening the cache —
         // see [DynamicLruCacheEvictor].
-        scope.launch {
-            AppSettings.audioCacheLimitBytes.collect { maxBytes ->
-                evictor.maxBytes = maxBytes
-                evictor.applyNow(cache)
+            scope.launch {
+                AppSettings.audioCacheLimitBytes.collect { maxBytes ->
+                    evictor.maxBytes = maxBytes
+                    evictor.applyNow(cache)
+                }
             }
+        } catch (error: Throwable) {
+            initializationFailure = error
+            throw error
+        } finally {
+            initialized.countDown()
         }
+    }
+
+    private fun awaitCache(): SimpleCache {
+        initialized.await()
+        initializationFailure?.let { throw IllegalStateException("Audio cache initialization failed", it) }
+        return cache
     }
 
     /** Drops everything on disk. The listener asked; no grace period. */
@@ -242,7 +268,8 @@ object AudioCache {
         analysisHeadWant.clear()
         renditionKeys.clear()
         scope.launch {
-            cache.keys.toList().forEach { cache.removeResource(it) }
+            val readyCache = awaitCache()
+            readyCache.keys.toList().forEach { readyCache.removeResource(it) }
             withContext(Dispatchers.Main) { onComplete() }
         }
     }
@@ -443,17 +470,45 @@ object AudioCache {
         val upstreamDs = upstream.createDataSource()
         object : DataSource {
             private var activeDs: DataSource = cacheDs
+            private val navidromeQuality = NavidromePlaybackQuality()
 
             override fun addTransferListener(transferListener: androidx.media3.datasource.TransferListener) {
                 cacheDs.addTransferListener(transferListener)
                 upstreamDs.addTransferListener(transferListener)
             }
 
-            override fun open(dataSpec: DataSpec): Long {
+            override fun open(requestSpec: DataSpec): Long {
+                val boundUri = navidromeQuality.bind(requestSpec.uri) { uri ->
+                    val key = keyFactory.buildCacheKey(requestSpec.buildUpon().setUri(uri).build())
+                    cache.getCachedSpans(key).isNotEmpty()
+                }
+                val dataSpec = requestSpec.buildUpon().setUri(boundUri).build()
                 val scheme = dataSpec.uri.scheme
                 val transcodedNavidrome = dataSpec.uri.authority == "navidrome" &&
                     dataSpec.uri.getQueryParameter("qf")?.let { it != "original" } == true
-                activeDs = if (scheme == "file" || scheme == "content" || transcodedNavidrome) {
+                val forcedNavidromeStream = dataSpec.uri.authority == "navidrome" &&
+                    NavidromeStore.config.value.forceStreaming
+                val transcodeSeek = transcodedNavidrome && NavidromeStreaming.isSeek(dataSpec.position)
+                if (transcodedNavidrome && !forcedNavidromeStream && !transcodeSeek && dataSpec.position == 0L) {
+                    // A partial generated transcode cannot safely be resumed by byte: a fresh
+                    // Navidrome response may not have byte-identical framing. Restart that cache
+                    // entry from zero. A completed entry, on the other hand, is a stable local
+                    // file and is served without touching the network.
+                    val key = keyFactory.buildCacheKey(dataSpec)
+                    val metadata = cache.getContentMetadata(key)
+                    val length = metadata.get(ContentMetadata.KEY_CONTENT_LENGTH, C.LENGTH_UNSET.toLong())
+                    val complete = length > 0L && cache.getCachedBytes(key, 0L, length) >= length
+                    if (!complete && cache.getCachedSpans(key).isNotEmpty()) {
+                        runCatching { cache.removeResource(key) }
+                    }
+                }
+                if (dataSpec.uri.authority == "navidrome" && !forcedNavidromeStream) {
+                    val mutations = ContentMetadataMutations()
+                    dataSpec.uri.getQueryParameter("n")?.let { mutations.set(META_TITLE, it) }
+                    dataSpec.uri.getQueryParameter("a")?.let { mutations.set(META_ARTIST, it) }
+                    cache.applyContentMetadataMutations(keyFactory.buildCacheKey(dataSpec), mutations)
+                }
+                activeDs = if (scheme == "file" || scheme == "content" || forcedNavidromeStream || transcodeSeek) {
                     // A Navidrome transcode is a newly generated progressive
                     // stream, not a byte-addressable copy of the source file.
                     // On a cache miss CacheDataSource reopens at the missing
@@ -483,8 +538,32 @@ object AudioCache {
         }
     }
 
+    fun cachedTracks(): List<CachedTrack> {
+        if (!::cache.isInitialized) return emptyList()
+        return cache.keys.asSequence()
+            .filter { it.startsWith("navidrome|") }
+            .mapNotNull { key ->
+                val spans = cache.getCachedSpans(key).filter { it.isCached }
+                val bytes = spans.sumOf { it.length }
+                if (bytes <= 0L) null else {
+                    val metadata = cache.getContentMetadata(key)
+                    CachedTrack(
+                        key = key,
+                        title = metadata.get(META_TITLE, key.substringAfter("navidrome|").substringBefore('|')).orEmpty(),
+                        artist = metadata.get(META_ARTIST, "").orEmpty(),
+                        sizeBytes = bytes,
+                    )
+                }
+            }
+            .sortedByDescending { it.sizeBytes }
+            .toList()
+    }
+
+    fun removeCachedTrack(key: String): Boolean =
+        ::cache.isInitialized && runCatching { cache.removeResource(key) }.isSuccess
+
     private fun cacheFactory(upstream: DataSource.Factory) = CacheDataSource.Factory()
-        .setCache(cache)
+        .setCache(awaitCache())
         .setUpstreamDataSourceFactory(upstream)
         .setCacheKeyFactory(keyFactory)
         // A cache write that fails (full disk, evicted mid-write) should drop
@@ -510,7 +589,7 @@ object AudioCache {
      * read, and every attempt past the first costs nothing.
      */
     private fun readAheadCacheFactory(upstream: DataSource.Factory) = CacheDataSource.Factory()
-        .setCache(cache)
+        .setCache(awaitCache())
         .setUpstreamDataSourceFactory(upstream)
         .setCacheKeyFactory(keyFactory)
 
@@ -1306,7 +1385,7 @@ object AudioCache {
     fun renditionDataSource(uri: Uri, rendition: Rendition): MediaDataSource =
         CacheMediaDataSource(
             CacheDataSource.Factory()
-                .setCache(cache)
+                .setCache(awaitCache())
                 .setUpstreamDataSourceFactory(NoUpstream)
                 .setCacheKeyFactory { rendition.key }
                 .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)

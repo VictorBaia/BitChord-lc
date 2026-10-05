@@ -31,6 +31,7 @@ internal object EncryptedPrefs {
 
     /** One store per file per process; every failed open was a Keystore round trip. */
     private val opened = HashMap<String, SharedPreferences>()
+    private var masterKey: MasterKey? = null
 
     @Synchronized
     fun open(context: Context, name: String, plainName: String): SharedPreferences =
@@ -63,7 +64,10 @@ internal object EncryptedPrefs {
         EncryptedSharedPreferences.create(
             context,
             name,
-            MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+            masterKey ?: MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+                .also { masterKey = it },
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
         )

@@ -31,6 +31,7 @@ data class NavidromeConfig(
     val wifiStreamQuality: NavidromeStreamQuality = NavidromeStreamQuality.ORIGINAL,
     val cellularStreamQuality: NavidromeStreamQuality = NavidromeStreamQuality.AAC_192,
     val downloadStreamQuality: NavidromeStreamQuality = NavidromeStreamQuality.ORIGINAL,
+    val forceStreaming: Boolean = false,
     val lyricsMode: NavidromeLyricsMode = NavidromeLyricsMode.APP_DEFAULT,
     val enrichArtists: Boolean = true,
 ) {

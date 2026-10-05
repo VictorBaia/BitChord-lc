@@ -14,6 +14,8 @@ import org.json.JSONObject
 
 object NavidromeIds {
     const val LIKED = "nd:liked"
+    /** Bundled artwork used by the Navidrome liked-songs collection. */
+    const val LIKED_ARTWORK = "file:///android_asset/liked_songs.png"
     private const val TRACK = "nd:"
     private const val ALBUM = "nd:album:"
     private const val ARTIST = "nd:artist:"
@@ -79,6 +81,12 @@ internal object NavidromeMapper {
             .takeIf { it.isNotBlank() }?.let(NavidromeIds::artist),
         albumId = value.optString("albumId").takeIf { it.isNotBlank() }?.let(NavidromeIds::album),
         albumName = value.optString("album").takeIf { it.isNotBlank() },
+        spotifyUri = value.optString("spotifyUri")
+            .ifBlank { value.optString("spotifyTrackUri") }
+            .ifBlank { value.optString("spotifyTrackId").takeIf { it.isNotBlank() }?.let { "spotify:track:$it" }.orEmpty() }
+            .ifBlank { value.optString("comment").takeIf(::isSpotifyReference).orEmpty() }
+            .takeIf { it.isNotBlank() },
+        isrc = value.optString("isrc").takeIf { it.isNotBlank() },
         isExplicit = value.optString("explicitStatus").trim().lowercase().let { status ->
             when (status) {
                 "explicit" -> true
@@ -89,10 +97,19 @@ internal object NavidromeMapper {
         sourceQuality = value.optString("suffix").takeIf { it.isNotBlank() }?.uppercase(),
     )
 
+    private fun isSpotifyReference(value: String): Boolean {
+        val uri = runCatching { Uri.parse(value.trim()) }.getOrNull() ?: return false
+        return uri.scheme.equals("spotify", ignoreCase = true) ||
+            uri.host.equals("open.spotify.com", ignoreCase = true)
+    }
+
     fun album(value: JSONObject): BrowseItem = BrowseItem(
         browseId = NavidromeIds.album(value.requiredId()),
         title = value.optString("name").ifBlank { value.optString("title") },
-        subtitle = value.albumArtistName(),
+        subtitle = listOfNotNull(
+            value.albumArtistName().takeIf(String::isNotBlank),
+            value.navidromeReleaseLabel(),
+        ).joinToString(" • "),
         thumbnailUrl = value.optString("coverArt").takeIf { it.isNotBlank() }?.let(NavidromeIds::cover),
         type = BrowseType.ALBUM,
     )
